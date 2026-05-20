@@ -554,6 +554,30 @@ function gerar_csv_dia_a_dia(mes::String, series::Dict)
 end
 
 """
+    gerar_csv_replica_qualquer(mes::String, sims_sddp, idx_repl::Int) -> nothing
+
+CSV com 1 replica QUALQUER do SDDP (estocastico) — trajetoria real onde
+Spill = max(0, FilaFim - CAP_ECOPATIO) bate exato linha a linha.
+"""
+function gerar_csv_replica_qualquer(mes::String, sims_sddp, idx_repl::Int)
+    sim = sims_sddp[idx_repl]
+    df = DataFrame(
+        dia        = collect(1:NUM_DIAS),
+        fila_in    = [sim[t][:fila].in for t in 1:NUM_DIAS],
+        adm_in     = [sim[t][:admitidos].in for t in 1:NUM_DIAS],
+        w_proc     = [sim[t][:w_proc] for t in 1:NUM_DIAS],
+        proc       = [sim[t][:processados] for t in 1:NUM_DIAS],
+        fila_out   = [sim[t][:fila].out for t in 1:NUM_DIAS],
+        spill      = [sim[t][:spillover] for t in 1:NUM_DIAS],
+        ocioso     = [sim[t][:ocioso] for t in 1:NUM_DIAS],
+        adm_out    = [sim[t][:admitidos].out for t in 1:NUM_DIAS],
+        custo      = [sim[t][:stage_objective] for t in 1:NUM_DIAS],
+    )
+    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_replica_qualquer.csv"), df)
+    @printf("  CSV replica qualquer (idx=%d) salvo: v8_%s_replica_qualquer.csv\n", idx_repl, mes)
+end
+
+"""
     gerar_csvs(mes::String, sims_4pol::Dict, ind_4pol::Dict)
 
 Gera 3 CSVs em OUTPUT_DIR:
@@ -704,6 +728,7 @@ function analisar_mes(mes::String)
     gerar_csvs(mes, sims_4pol, ind_4pol)
     series = gerar_pngs_evolucao(mes, sims_4pol)
     gerar_csv_dia_a_dia(mes, series)
+    gerar_csv_replica_qualquer(mes, sims_sddp, 42)  # replica arbitraria r=42
 
     return ind_4pol
 end
