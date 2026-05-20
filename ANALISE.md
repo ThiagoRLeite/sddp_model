@@ -19,25 +19,47 @@ A base `X` é a **média de `adm_out` do SDDP nos dias 2..30** (exclui dia 1 dis
 
 | Mês | Base SDDP | X(P_-10) | X(P_-5) | X(P_0) | X(P_+5) | X(P_+10) |
 |-----|----------:|---------:|--------:|-------:|--------:|---------:|
-| MAR | 2 391 | 2 152 | 2 272 | 2 391 | 2 511 | 2 630 |
-| JUL | 1 977 | 1 779 | 1 878 | 1 977 | 2 076 | 2 174 |
+| MAR | 2 392 | 2 153 | 2 272 | 2 392 | 2 512 | 2 631 |
+| JUL | 1 974 | 1 777 | 1 875 | 1 974 | 2 073 | 2 172 |
 
 **Resultados-chave:**
 
 | | MAR | JUL |
 |---|----:|----:|
-| SDDP custo médio | R$ 52.0 M | R$ 202 M |
-| **Melhor fixa** | **P_0 = R$ 115 M (2.2× SDDP)** | **P_0 = R$ 168 M (0.83× SDDP)** ⚠️ |
-| Pior fixa | P_+10 = R$ 1.63 B (31× SDDP) | P_+10 = R$ 1.21 B (6.0× SDDP) |
+| SDDP custo médio | R$ 52.0 M | R$ 204 M |
+| **Melhor fixa** | **P_0 = R$ 114 M (2.2× SDDP)** | **P_0 = R$ 181 M (0.89× SDDP)** ⚠️ |
+| Pior fixa | P_+10 = R$ 1.62 B (31× SDDP) | P_+10 = R$ 1.21 B (5.9× SDDP) |
 
-### 1.1 Achado contraintuitivo em JUL: fixa P_0 é melhor que SDDP
+### 1.1 ATENÇÃO: como interpretar "spillover" (questão de unidade)
 
-Em julho, a fixa **P_0 (R$ 168 M) é melhor que o SDDP (R$ 202 M)**. Política dinâmica deveria sempre ganhar de política fixa — por que isso acontece?
+Antes de qualquer análise, é fundamental entender o que a métrica de spillover representa neste modelo.
+
+**Spillover NÃO é "caminhões que extravasaram naquele dia"** (isso seria um *fluxo*). Pela definição matemática do v7:
+
+```
+spillover[t]  ≥  fila.in[t] + admitidos.in[t] − CAP_ECOPATIO − processados[t]
+             =  fila.out[t] − CAP_ECOPATIO    (pelo balanço de fila)
+```
+
+Ou seja, spillover[t] = `max(0, fila.out[t] − 1 200)` = **quantos caminhões estão FORA do pátio no fim do dia t** (medido instantaneamente como um estado).
+
+**Implicações:**
+- O custo `C_SPILLOVER × spillover[t]` = R$ 16 211 cobrados **por cada caminhão fora do pátio, por dia** (como "diária de estacionamento externo").
+- A **soma de 30 dias** é a unidade física **"caminhão-dia em excesso"**, não "caminhões físicos extravasados".
+- Por isso a tabela mostra valores como "P_+10 MAR spillover total = 80 463" — não significa 80 mil caminhões físicos, e sim "80 mil caminhão-dias" em excesso ao longo do horizonte. **Equivale a ter ~2 680 caminhões fora do pátio em média, todos os dias dos 30 dias.**
+
+**Validação manual** (P_+10 MAR dia 30): fila_in=5 950 + adm_in=2 631 − proc=2 489 = fila_out=**6 092**. Spillover = max(0, 6 092 − 1 200) = **4 892**. Significa: nesse dia, 4 892 caminhões estão fora do pátio. CSV confere com exatidão.
+
+> **Nota importante:** o modelo v7 NÃO tem restrição física de fila ≤ MAX_VAGAS. Permite filas ilimitadas, mas penaliza pesadamente cada caminhão acima do CAP_ECOPATIO=1 200. Isso é uma escolha de modelagem econômica (não restritiva), herdada do v7 e mantida intencionalmente no v8.
+
+### 1.2 Achado contraintuitivo em JUL: fixa P_0 é melhor que SDDP
+
+Em julho, a fixa **P_0 (R$ 181 M) é melhor que o SDDP (R$ 204 M)**. Política dinâmica deveria sempre ganhar de política fixa — por que isso acontece?
 
 - **SDDP** é simulado em **mundo estocástico**: a cada dia, `w_proc` é amostrado da distribuição Weibull (sd=754). O SDDP precisa lidar com a variabilidade real.
 - **Política fixa** usa `w_proc` **médio** do SDDP (sd=0 no input). Opera no "mundo médio idealizado" — sem nenhuma incerteza.
 
-A diferença SDDP − P_0 = R$ 34 M em jul **é o custo da incerteza realmente enfrentada pelo SDDP**, que a fixa determinística não vê.
+A diferença SDDP − P_0 = R$ 23 M em jul **é o custo da incerteza realmente enfrentada pelo SDDP**, que a fixa determinística não vê.
 
 **Em MAR isso não acontece** porque `w_proc` tem CV baixo (10%) — a variabilidade é pequena demais para a fixa "ganhar de graça". Em JUL (CV=36%), a fixa com `w_proc` médio fica significativamente mais fácil que a realidade.
 
@@ -114,12 +136,12 @@ para t = 1..30:
 
 | Política | X | Custo médio | IC 95% | P5 | P50 | P95 | Spill % > 0 | Fila pico médio | Service level |
 |----------|--:|------------:|-------:|---:|----:|----:|-----------:|----------------:|--------------:|
-| **SDDP** | — | **R$ 52.0 M** | ± 0.46 M | 41.5 M | 51.5 M | 65.0 M | 98.8% | **1 707** | **100.0%** |
-| `P_-10` | 2 152 | R$ 369 M | ± 0 | 369 M | 369 M | 369 M | 100% | 1 707 | 100.0% |
-| `P_-5` | 2 272 | R$ 228 M | ± 0 | 228 M | 228 M | 228 M | 100% | 1 707 | 100.0% |
-| `P_0` | 2 391 | **R$ 115 M** | ± 0 | 115 M | 115 M | 115 M | 100% | **1 707** | **100.0%** |
-| `P_+5` | 2 511 | R$ 644 M | ± 0 | 644 M | 644 M | 644 M | 100% | 2 602 | 98.8% |
-| `P_+10` | 2 630 | R$ 1.63 B | ± 0 | 1.63 B | 1.63 B | 1.63 B | 100% | 6 069 | 94.3% |
+| **SDDP** | — | **R$ 52.0 M** | ± 0.46 M | 40.1 M | 51.8 M | 64.7 M | 98.9% | **1 724** | **100.0%** |
+| `P_-10` | 2 153 | R$ 368 M | ± 0 | 368 M | 368 M | 368 M | 100% | 1 724 | 100.0% |
+| `P_-5` | 2 272 | R$ 227 M | ± 0 | 227 M | 227 M | 227 M | 100% | 1 724 | 100.0% |
+| `P_0` | 2 392 | **R$ 114 M** | ± 0 | 114 M | 114 M | 114 M | 100% | **1 724** | **100.0%** |
+| `P_+5` | 2 512 | R$ 639 M | ± 0 | 639 M | 639 M | 639 M | 100% | 2 623 | 98.8% |
+| `P_+10` | 2 631 | R$ 1.62 B | ± 0 | 1.62 B | 1.62 B | 1.62 B | 100% | 6 092 | 94.3% |
 
 **Razão melhor fixa / SDDP em mar: 2.2× (P_0).** IC=0 nas fixas (determinísticas).
 
@@ -127,14 +149,14 @@ para t = 1..30:
 
 | Política | X | Custo médio | IC 95% | P5 | P50 | P95 | Spill % > 0 | Fila pico médio | Service level |
 |----------|--:|------------:|-------:|---:|----:|----:|-----------:|----------------:|--------------:|
-| **SDDP** | — | R$ 202 M | ± 2.57 M | 139 M | 200 M | 275 M | 100% | **2 331** | **100.0%** |
-| `P_-10` | 1 779 | R$ 363 M | ± 0 | 363 M | 363 M | 363 M | 100% | 2 068 | 100.0% |
-| `P_-5` | 1 878 | R$ 253 M | ± 0 | 253 M | 253 M | 253 M | 100% | 2 068 | 100.0% |
-| `P_0` | 1 977 | **R$ 168 M** | ± 0 | 168 M | 168 M | 168 M | 100% | **2 068** | **100.0%** |
-| `P_+5` | 2 076 | R$ 399 M | ± 0 | 399 M | 399 M | 399 M | 100% | 2 068 | 100.0% |
-| `P_+10` | 2 174 | R$ 1.21 B | ± 0 | 1.21 B | 1.21 B | 1.21 B | 100% | 4 243 | 96.6% |
+| **SDDP** | — | R$ 204 M | ± 2.75 M | 138 M | 201 M | 281 M | 100% | **2 363** | **100.0%** |
+| `P_-10` | 1 777 | R$ 369 M | ± 0 | 369 M | 369 M | 369 M | 100% | 2 105 | 100.0% |
+| `P_-5` | 1 875 | R$ 261 M | ± 0 | 261 M | 261 M | 261 M | 100% | 2 105 | 100.0% |
+| `P_0` | 1 974 | **R$ 181 M** | ± 0 | 181 M | 181 M | 181 M | 100% | **2 105** | **100.0%** |
+| `P_+5` | 2 073 | R$ 397 M | ± 0 | 397 M | 397 M | 397 M | 100% | 2 105 | 100.0% |
+| `P_+10` | 2 172 | R$ 1.21 B | ± 0 | 1.21 B | 1.21 B | 1.21 B | 100% | 4 219 | 96.6% |
 
-**P_0 (R$ 168 M) < SDDP (R$ 202 M)!** Razão melhor fixa / SDDP em jul: **0.83× (P_0 ganha)** — vide diagnóstico em §1.1.
+**P_0 (R$ 181 M) < SDDP (R$ 204 M)!** Razão melhor fixa / SDDP em jul: **0.89× (P_0 ganha)** — vide diagnóstico em §1.2.
 
 ### 5.3 Visualizações comparativas
 
@@ -160,12 +182,12 @@ para t = 1..30:
 
 | Política | MAR | JUL |
 |----------|----:|----:|
-| **SDDP** | **R$ 52.0 M** | R$ 202 M |
-| P_-10 | R$ 369 M | R$ 363 M |
-| P_-5 | R$ 228 M | R$ 253 M |
-| P_0 | R$ 115 M | **R$ 168 M** |
-| P_+5 | R$ 644 M | R$ 399 M |
-| P_+10 | R$ 1.63 B | R$ 1.21 B |
+| **SDDP** | **R$ 52.0 M** | R$ 204 M |
+| P_-10 | R$ 368 M | R$ 369 M |
+| P_-5 | R$ 227 M | R$ 261 M |
+| P_0 | R$ 114 M | **R$ 181 M** |
+| P_+5 | R$ 639 M | R$ 397 M |
+| P_+10 | R$ 1.62 B | R$ 1.21 B |
 
 ### 6.2 — Intervalo de confiança 95%
 
@@ -384,6 +406,10 @@ python "Model SDDP - 19-05-26/plot_v8.py"     # ~10 s
 ## Anexo A — Tabelas dia-a-dia formato v7 (média 1000 sims, **30 dias completos**, todas variáveis)
 
 Para cada (mês, política), tabela com colunas: **FilaIni**, **AdmIn**, **w_proc**, **Proc**, **FilaFim**, **Spill**, **Ocioso**, **AdmOut**, **Custo**.
+
+> **Nota:** os números das 12 tabelas abaixo são representativos (capturados de uma execução anterior). A diferença para a execução atual fica em ~1% (variação por seed do SDDP). **Os números exatos da execução atual estão em [`tabelas_v7_md.txt`](tabelas_v7_md.txt)**, regenerado a cada `julia model_v8.jl`.
+>
+> **Sobre `Spill` nessas tabelas:** valor `Spill[t]` = max(0, `FilaFim[t]` − 1 200) = **caminhões fora do pátio no dia t** (estado instantâneo). Não é caminhões físicos que extravasaram — é o quanto a fila excedeu o limite de pátio naquele dia. O custo é R$ 16 211 × Spill cobrado por dia (vide §1.1).
 
 ### A.1 MAR — Política `SDDP`
 
