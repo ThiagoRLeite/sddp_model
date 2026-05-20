@@ -22,14 +22,22 @@ Pipeline de **otimização estocástica multi-estágio (SDDP)** comparado com **
 
 ---
 
-## Como rodar
+## Como rodar (3 etapas)
 
 ```bash
 cd "Projeto - IC - Rodoviário"
 
-julia "Model SDDP - 19-05-26/model_v8.jl"     # ~2.5 min — gera CSVs + 22 PNGs
-python "Model SDDP - 19-05-26/plot_v8.py"     # ~10 s — gera 15 PNGs publicação
+julia "Model SDDP - 19-05-26/model_v8.jl"       # ~2.5 min — gera CSVs em outputs/
+python "Model SDDP - 19-05-26/plot_v8.py"       # ~10 s   — gera 15 PNGs em outputs/
+python "Model SDDP - 19-05-26/gerar_analise.py" # ~1 s    — gera ANALISE.md a partir dos CSVs
 ```
+
+**Separação de responsabilidades:**
+- **Julia** roda o pipeline SDDP e exporta os dados em CSVs (médias dia-a-dia, sumários, réplicas).
+- **Python (`plot_v8.py`)** lê CSVs e gera gráficos publicação-ready (matplotlib + seaborn).
+- **Python (`gerar_analise.py`)** lê CSVs e gera o ANALISE.md final com todas as tabelas, números e anexos.
+
+> ANALISE.md é **sempre gerado a partir dos CSVs** — não editar manualmente. Para atualizar = re-executar o pipeline.
 
 **Primeira execução:** o Julia instala pacotes automaticamente (~5-10 min). Execuções subsequentes: ~2.5 min.
 
