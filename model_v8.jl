@@ -465,17 +465,21 @@ function gerar_pngs(mes::String, ind_4pol::Dict)
 end
 
 """
-    gerar_pngs_evolucao(mes::String, sims_4pol::Dict)
+    gerar_pngs_evolucao(mes::String, sims_4pol::Dict, sim_sddp_cen_medio::Vector)
 
-Gera 6 PNGs de evolucao dia-a-dia (media nas 1000 sims, 1 linha por politica):
+Gera 6 PNGs de evolucao dia-a-dia (1 linha por politica):
 - v8_<mes>_proc_dia.png       — processados/dia (linear)
 - v8_<mes>_ocioso_dia.png     — ocioso/dia (log)
 - v8_<mes>_spillover_dia.png  — spillover/dia (log)
 - v8_<mes>_fila_dia.png       — fila.out/dia (linear)
 - v8_<mes>_custo_dia.png      — stage_objective/dia (log)
 - v8_<mes>_custo_acumulado.png— soma cumulativa do custo (log)
+
+CONSISTENCIA com Anexos (v8.4): SDDP usa a TRAJETORIA do cenario medio deterministico
+(via SDDP.Historical) — mesma do anexo. Fixas seguem deterministicas (1000 sims identicas).
+Banda estocastica do SDDP (P5/P95 + media 1000 sims) eh exportada como SDDP_estoc_* no CSV.
 """
-function gerar_pngs_evolucao(mes::String, sims_4pol::Dict)
+function gerar_pngs_evolucao(mes::String, sims_4pol::Dict, sim_sddp_cen_medio)
     default(legend = :outerright, size = (1100, 600))
     dias = collect(1:NUM_DIAS)
 
@@ -487,26 +491,64 @@ function gerar_pngs_evolucao(mes::String, sims_4pol::Dict)
         ]
     end
 
-    # series[pol][var] = vetor de 30 medias
+    function _quantil_dia(sims, key, q::Float64, in_or_out=nothing)
+        return [
+            quantile([in_or_out === nothing ? sim[t][key] : getproperty(sim[t][key], in_or_out)
+                      for sim in sims], q)
+            for t in dias
+        ]
+    end
+
+    # series[pol][var] = vetor de 30 valores
     series = Dict{String,Any}()
     for pol in POL_ORDER
         sims = sims_4pol[pol]
-        series[pol] = Dict(
-            :fila_in  => _medias_dia(sims, :fila, :in),
-            :adm_in   => _medias_dia(sims, :admitidos, :in),
-            :w_proc   => _medias_dia(sims, :w_proc),
-            :proc     => _medias_dia(sims, :processados),
-            :ocioso   => _medias_dia(sims, :ocioso),
-            :spill    => _medias_dia(sims, :spillover),
-            :fila_out => _medias_dia(sims, :fila, :out),
-            :adm_out  => _medias_dia(sims, :admitidos, :out),
-            :custo    => _medias_dia(sims, :stage_objective),
-        )
+        if pol == "SDDP"
+            # SDDP usa a trajetoria do cenario medio deterministico (consistente com Anexo)
+            series[pol] = Dict(
+                :fila_in  => [sim_sddp_cen_medio[t][:fila].in       for t in dias],
+                :adm_in   => [sim_sddp_cen_medio[t][:admitidos].in  for t in dias],
+                :w_proc   => [sim_sddp_cen_medio[t][:w_proc]        for t in dias],
+                :proc     => [sim_sddp_cen_medio[t][:processados]   for t in dias],
+                :ocioso   => [sim_sddp_cen_medio[t][:ocioso]        for t in dias],
+                :spill    => [sim_sddp_cen_medio[t][:spillover]     for t in dias],
+                :fila_out => [sim_sddp_cen_medio[t][:fila].out      for t in dias],
+                :adm_out  => [sim_sddp_cen_medio[t][:admitidos].out for t in dias],
+                :custo    => [sim_sddp_cen_medio[t][:stage_objective] for t in dias],
+            )
+        else
+            # Fixas: media das 1000 sims (identicas, pois deterministicas)
+            series[pol] = Dict(
+                :fila_in  => _medias_dia(sims, :fila, :in),
+                :adm_in   => _medias_dia(sims, :admitidos, :in),
+                :w_proc   => _medias_dia(sims, :w_proc),
+                :proc     => _medias_dia(sims, :processados),
+                :ocioso   => _medias_dia(sims, :ocioso),
+                :spill    => _medias_dia(sims, :spillover),
+                :fila_out => _medias_dia(sims, :fila, :out),
+                :adm_out  => _medias_dia(sims, :admitidos, :out),
+                :custo    => _medias_dia(sims, :stage_objective),
+            )
+        end
         series[pol][:custo_acum] = cumsum(series[pol][:custo])
     end
 
+    # Banda estocastica do SDDP (1000 sims) — usada no grafico de custo acumulado
+    sims_sddp = sims_4pol["SDDP"]
+    custo_por_replica = [[sim[t][:stage_objective] for t in dias] for sim in sims_sddp]
+    custo_acum_por_replica = [cumsum(c) for c in custo_por_replica]
+    cum_matrix = reduce(hcat, custo_acum_por_replica)  # 30 x N_SIM
+    series["SDDP_estoc"] = Dict(
+        :custo_mean      => _medias_dia(sims_sddp, :stage_objective),
+        :custo_p5        => _quantil_dia(sims_sddp, :stage_objective, 0.05),
+        :custo_p95       => _quantil_dia(sims_sddp, :stage_objective, 0.95),
+        :custo_acum_mean => [mean(cum_matrix[t, :]) for t in dias],
+        :custo_acum_p5   => [quantile(cum_matrix[t, :], 0.05) for t in dias],
+        :custo_acum_p95  => [quantile(cum_matrix[t, :], 0.95) for t in dias],
+    )
+
     plotar = function(var::Symbol, ylab, fname, logy::Bool)
-        p = plot(title = "$(uppercase(mes)) — $ylab (media 1000 sims)",
+        p = plot(title = "$(uppercase(mes)) — $ylab (cenario medio deterministico)",
                  xlabel = "Dia", ylabel = ylab,
                  yscale = logy ? :log10 : :identity)
         for pol in POL_ORDER
@@ -561,8 +603,17 @@ function gerar_csv_dia_a_dia(mes::String, series::Dict)
         df[!, Symbol("$(pol)_custo")]      = series[pol][:custo]
         df[!, Symbol("$(pol)_custo_acum")] = series[pol][:custo_acum]
     end
+    # Banda estocastica do SDDP (1000 sims) — para overlay no grafico
+    if haskey(series, "SDDP_estoc")
+        df[!, :SDDP_estoc_custo_mean]      = series["SDDP_estoc"][:custo_mean]
+        df[!, :SDDP_estoc_custo_p5]        = series["SDDP_estoc"][:custo_p5]
+        df[!, :SDDP_estoc_custo_p95]       = series["SDDP_estoc"][:custo_p95]
+        df[!, :SDDP_estoc_custo_acum_mean] = series["SDDP_estoc"][:custo_acum_mean]
+        df[!, :SDDP_estoc_custo_acum_p5]   = series["SDDP_estoc"][:custo_acum_p5]
+        df[!, :SDDP_estoc_custo_acum_p95]  = series["SDDP_estoc"][:custo_acum_p95]
+    end
     CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_dia_a_dia.csv"), df)
-    @printf("  CSV dia-a-dia salvo: v8_%s_dia_a_dia.csv (valores nativos do modelo)\n", mes)
+    @printf("  CSV dia-a-dia salvo: v8_%s_dia_a_dia.csv (SDDP=cenario medio + banda P5/P95 estoc)\n", mes)
 end
 
 """
@@ -738,13 +789,15 @@ function analisar_mes(mes::String)
     gerar_tabelas_terminal(mes, sims_4pol, ind_4pol)
     gerar_pngs(mes, ind_4pol)
     gerar_csvs(mes, sims_4pol, ind_4pol)
-    series = gerar_pngs_evolucao(mes, sims_4pol)
+
+    # SDDP no CENARIO MEDIO determinisitico (w_proc fixo = media SDDP por dia)
+    # Mesmo cenario usado pelas politicas fixas — comparacao 100% justa.
+    # Esta sim e' usada como SDDP no dia-a-dia (consistente com Anexo).
+    sim_sddp_cen_medio = gerar_csv_sddp_cenario_medio(mes, model, w_proc_medio_diario)
+
+    series = gerar_pngs_evolucao(mes, sims_4pol, sim_sddp_cen_medio)
     gerar_csv_dia_a_dia(mes, series)
     gerar_csv_replica_qualquer(mes, sims_sddp, 42)  # replica arbitraria r=42
-
-    # Simula SDDP no CENARIO MEDIO determinisitico (w_proc fixo = media SDDP por dia)
-    # Mesmo cenario usado pelas politicas fixas — comparacao 100% justa.
-    gerar_csv_sddp_cenario_medio(mes, model, w_proc_medio_diario)
 
     return ind_4pol
 end
@@ -790,6 +843,7 @@ function gerar_csv_sddp_cenario_medio(mes::String, model, w_proc_medio_diario::V
     )
     CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_sddp_cenario_medio.csv"), df)
     @printf("  CSV SDDP cenario medio salvo: v8_%s_sddp_cenario_medio.csv\n", mes)
+    return sim
 end
 
 function main()

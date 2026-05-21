@@ -78,6 +78,8 @@ def _add_pol_lines(ax, df, var_suffix, ylabel, logy=False):
 def plot_custo_acumulado(mes: str):
     df = pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv")
     fig, ax = plt.subplots(figsize=(12, 6.5))
+
+    # 6 linhas — cenario medio deterministico, bate exato com Anexos A/B
     for pol in POL_ORDER:
         ax.plot(df["dia"], df[f"{pol}_custo_acum"],
                 color=PALETTE[pol], linewidth=LINEWIDTH[pol],
@@ -87,17 +89,21 @@ def plot_custo_acumulado(mes: str):
     ax.set_ylabel("Custo acumulado (R$, escala log)")
     ax.yaxis.set_major_formatter(mtick.FuncFormatter(_fmt_brl))
     ax.grid(True, alpha=0.35, which="both")
-    ax.set_title(f"Custo acumulado dia a dia — {mes.upper()} (média 1000 sims)")
-    # Legenda à direita fora do plot — não conflita com anotação
+    ax.set_title(f"Custo acumulado dia a dia — {mes.upper()} (cenário médio determinístico)")
     ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=10, frameon=True)
-    # anotação valor final no canto inferior direito do plot
+
+    # Anotacao com totais (coincide com Σ Custo dos Anexos)
     sddp_fim = df["SDDP_custo_acum"].iloc[-1]
-    best_fix = min(df[f"{p}_custo_acum"].iloc[-1] for p in POL_ORDER if p != "SDDP")
-    worst_fix = max(df[f"{p}_custo_acum"].iloc[-1] for p in POL_ORDER if p != "SDDP")
-    ratio_b = best_fix / sddp_fim
-    ratio_w = worst_fix / sddp_fim
+    fixas = {p: df[f"{p}_custo_acum"].iloc[-1] for p in POL_ORDER if p != "SDDP"}
+    best_name, best_val = min(fixas.items(), key=lambda kv: kv[1])
+    worst_name, worst_val = max(fixas.items(), key=lambda kv: kv[1])
+    ratio_b = best_val / sddp_fim
+    ratio_w = worst_val / sddp_fim
     ax.text(0.02, 0.02,
-            f"Após 30 dias:\nSDDP: {_fmt_brl(sddp_fim)}\nMelhor fixa: {_fmt_brl(best_fix)} ({ratio_b:.0f}×)\nPior fixa: {_fmt_brl(worst_fix)} ({ratio_w:.0f}×)",
+            f"Após 30 dias (cenário médio):\n"
+            f"SDDP: {_fmt_brl(sddp_fim)}\n"
+            f"Melhor fixa ({best_name}): {_fmt_brl(best_val)} ({ratio_b:.1f}×)\n"
+            f"Pior fixa ({worst_name}): {_fmt_brl(worst_val)} ({ratio_w:.0f}×)",
             transform=ax.transAxes, va="bottom", ha="left",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="white", edgecolor="gray", alpha=0.95),
             fontsize=10)

@@ -328,6 +328,8 @@ def gerar_md(dados, bases) -> str:
     md.append("")
     md.append("**Resultado:** `Spill[t] = max(0, FilaFim[t] − 1 200)` bate **exato linha a linha em todas as 6 políticas** (validado: 12/12 OK). Comparação 100% justa.")
     md.append("")
+    md.append("**Consistência (v8.4):** o **gráfico de custo acumulado** (`py_v8_<mes>_custo_acumulado.png`) usa o **mesmo cenário médio determinístico** dos Anexos A/B. Os totais ao final do dia 30 batem **exato** com a coluna Σ Custo das tabelas — sem ambiguidade.")
+    md.append("")
     md.append("Para estatísticas agregadas das 1 000 sims estocásticas do SDDP (custo médio com IC, quantis, P(spill>0)), ver §5 (Indicadores).")
     md.append("")
     md.append("---")
