@@ -534,58 +534,34 @@ end
 
 CSV com medias dia-a-dia (30 linhas) das variaveis para cada politica.
 
-NOTA IMPORTANTE — para o SDDP (estocastico), recalculamos Spill, Ocioso e Custo
-em cima das medias para que a tabela seja COERENTE LINHA-A-LINHA:
-  Spill[t]  = max(0, FilaFim_media[t] - CAP_ECOPATIO)
-  Ocioso[t] = max(0, w_proc_media[t]  - Proc_media[t])
-  Custo[t]  = C_FILA*(FilaIni+FilaFim)/2 + C_SPILLOVER*Spill + C_OCIOSO_TOTAL*Ocioso
+VALORES NATIVOS DO MODELO — sem nenhum recalculo. Para o SDDP, cada coluna
+e' a media direta entre as 1000 replicas estocasticas; nao aplicamos nenhuma
+formula em cima das medias. Para as fixas, sao trajetorias deterministicas.
 
-A media estocastica real de Spill (= mean(max(0, fila_out[r,t]-CAP)) entre 1000
-replicas) pode ser maior que max(0, mean(fila_out) - CAP) por causa da
-desigualdade de Jensen. O custo total reportado em §5.2 do ANALISE.md usa a
-media estocastica real. Esta tabela usa a versao recalculada para coerencia
-visual — a diferenca e' o "custo da variabilidade" capturado pelo modelo.
-
-Para as politicas fixas P_-10..P_+10, sao deterministicas (w_proc fixo,
-adm_out=X constante), entao os valores ja batem linha-a-linha sem recalculo.
+NOTA: para o SDDP, a media estocastica de Spill (= mean(max(0, fila_out[r,t]-CAP)))
+pode ser positiva mesmo quando a media de fila_out estiver abaixo de CAP, por
+causa da desigualdade de Jensen (mean(max(0, X)) >= max(0, mean(X))). Isso
+NAO E BUG — e' propriedade matematica esperada quando se agrega trajetorias
+estocasticas. Para uma TRAJETORIA INDIVIDUAL do SDDP (onde a formula bate
+linha-a-linha), use o CSV v8_<mes>_replica_repr.csv (replica de custo
+proximo da media) ou v8_<mes>_replica_qualquer.csv (replica idx=42).
 """
 function gerar_csv_dia_a_dia(mes::String, series::Dict)
     df = DataFrame(dia = collect(1:NUM_DIAS))
     for pol in POL_ORDER
-        fila_in  = copy(series[pol][:fila_in])
-        adm_in   = copy(series[pol][:adm_in])
-        w_proc   = copy(series[pol][:w_proc])
-        proc     = copy(series[pol][:proc])
-        fila_out = copy(series[pol][:fila_out])
-        adm_out  = copy(series[pol][:adm_out])
-
-        # Apenas SDDP precisa de recalculo (politicas fixas ja sao coerentes)
-        if pol == "SDDP"
-            spill  = [max(0.0, fila_out[t] - CAP_ECOPATIO) for t in 1:NUM_DIAS]
-            ocioso = [max(0.0, w_proc[t]   - proc[t])      for t in 1:NUM_DIAS]
-            custo  = [C_FILA * (fila_in[t] + fila_out[t]) / 2 +
-                      C_SPILLOVER    * spill[t] +
-                      C_OCIOSO_TOTAL * ocioso[t]            for t in 1:NUM_DIAS]
-        else
-            spill  = series[pol][:spill]
-            ocioso = series[pol][:ocioso]
-            custo  = series[pol][:custo]
-        end
-        custo_acum = cumsum(custo)
-
-        df[!, Symbol("$(pol)_fila_in")]    = fila_in
-        df[!, Symbol("$(pol)_adm_in")]     = adm_in
-        df[!, Symbol("$(pol)_w_proc")]     = w_proc
-        df[!, Symbol("$(pol)_proc")]       = proc
-        df[!, Symbol("$(pol)_fila_out")]   = fila_out
-        df[!, Symbol("$(pol)_spill")]      = spill
-        df[!, Symbol("$(pol)_ocioso")]     = ocioso
-        df[!, Symbol("$(pol)_adm_out")]    = adm_out
-        df[!, Symbol("$(pol)_custo")]      = custo
-        df[!, Symbol("$(pol)_custo_acum")] = custo_acum
+        df[!, Symbol("$(pol)_fila_in")]    = series[pol][:fila_in]
+        df[!, Symbol("$(pol)_adm_in")]     = series[pol][:adm_in]
+        df[!, Symbol("$(pol)_w_proc")]     = series[pol][:w_proc]
+        df[!, Symbol("$(pol)_proc")]       = series[pol][:proc]
+        df[!, Symbol("$(pol)_fila_out")]   = series[pol][:fila_out]
+        df[!, Symbol("$(pol)_spill")]      = series[pol][:spill]
+        df[!, Symbol("$(pol)_ocioso")]     = series[pol][:ocioso]
+        df[!, Symbol("$(pol)_adm_out")]    = series[pol][:adm_out]
+        df[!, Symbol("$(pol)_custo")]      = series[pol][:custo]
+        df[!, Symbol("$(pol)_custo_acum")] = series[pol][:custo_acum]
     end
     CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_dia_a_dia.csv"), df)
-    @printf("  CSV dia-a-dia salvo: v8_%s_dia_a_dia.csv (SDDP com recalculo coerente)\n", mes)
+    @printf("  CSV dia-a-dia salvo: v8_%s_dia_a_dia.csv (valores nativos do modelo)\n", mes)
 end
 
 """
