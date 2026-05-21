@@ -231,9 +231,10 @@ end
                  seed_base::Int = SEED_BASE)
         -> Vector{Vector{Dict}}
 
-Monte Carlo da politica fixa "processar X constante (clip por w_proc e fila+adm)".
+Simulacao deterministica da politica fixa "admitir X constante (proc clip por w_proc e fila+adm)".
 NOVA REGRA (v8.3): w_proc dia a dia e' FIXO = media do SDDP no mesmo dia.
-Politica fixa fica DETERMINISTICA — todas as N replicas sao identicas.
+Politica fixa e' DETERMINISTICA (NAO e' Monte Carlo) — todas as N replicas sao identicas
+porque nao ha amostragem aleatoria: w_proc fixo + adm_out fixo => uma unica trajetoria possivel.
 - X = admissao constante (adm_out = X)
 - proc = min(w_proc_medio_diario[t], fila.in + adm.in)
 

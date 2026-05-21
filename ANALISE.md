@@ -7,7 +7,7 @@ python plot_v8.py        # gera 15 PNGs
 python gerar_analise.py  # gera este ANALISE.md a partir dos CSVs
 ```
 
-Mês: Março (LogNormal, CV=10%) e Julho (Weibull, CV=36%). 30 dias, 1 000 simulações Monte Carlo.
+Mês: Março (LogNormal, CV=10%) e Julho (Weibull, CV=36%). Horizonte de 30 dias. SDDP simulado com 1 000 amostragens estocásticas; fixas rodam **uma trajetória determinística** (w_proc fixo = média SDDP).
 
 ---
 
@@ -79,6 +79,8 @@ Execução (online, em cada estágio t):
 
 ### 2.2 Políticas fixas P_X (5 níveis em ±10%, ±5%, 0% da base SDDP)
 
+> **Importante:** as fixas **NÃO são Monte Carlo**. Como `w_proc[t]` é fixado (média do SDDP) e `adm_out = X` é constante, **toda a trajetória é determinística**: dado o estado inicial, há **uma única evolução possível** dos 30 dias. Não há amostragem aleatória nas fixas.
+
 ```
 base = mean(admitidos.out do SDDP, dias 2..30 das 1 000 sims)
 X_{P_-10}, X_{P_-5}, X_{P_0}, X_{P_+5}, X_{P_+10}
@@ -87,7 +89,7 @@ X_{P_-10}, X_{P_-5}, X_{P_0}, X_{P_+5}, X_{P_+10}
 Estado inicial: fila = 1200,  admitidos.in = 3000
 
 Para cada t = 1..30:
-    w_proc[t] = mean(w_proc(SDDP) dia t, das 1 000 sims)  ← determinístico
+    w_proc[t] = mean(w_proc(SDDP) dia t, das 1 000 sims)  ← FIXO (não amostrado)
     processados[t]  = min(w_proc[t], fila.in + admitidos.in)
     spillover[t]    = max(0, fila.in + admitidos.in − 1200 − processados[t])
     ocioso[t]       = max(0, w_proc[t] − processados[t])
@@ -95,6 +97,8 @@ Para cada t = 1..30:
     admitidos.out   = X    ← REGRA FIXA (constante por toda a simulação)
     fila.in, admitidos.in = fila.out, admitidos.out
 ```
+
+> **Por que essa abordagem?** Para isolar o efeito da decisão de admissão. Tudo fica idêntico entre as 6 políticas (estado inicial, w_proc, fórmulas) — só muda `adm_out`. Diferenças no custo refletem APENAS a escolha de admissão. É uma comparação determinística, sem ruído estatístico.
 
 ---
 
@@ -105,7 +109,7 @@ Todas as 6 políticas rodam no **MESMO cenário médio determinístico**:
 - `w_proc[t]` fixo = média das 1 000 sims SDDP por dia (mesma série em todas)
 - Estado inicial idêntico (Fila=1200, AdmIn=3000)
 - **SDDP** roda via `SDDP.Historical` com `w_proc[t]` forçado
-- **Fixas** rodam Monte Carlo determinístico com `adm_out = X` constante
+- **Fixas** rodam **uma trajetória determinística** com `adm_out = X` constante (não há amostragem — sem aleatoriedade)
 
 **Resultado:** `Spill[t] = max(0, FilaFim[t] − 1 200)` bate **exato linha a linha em todas as 6 políticas** (validado: 12/12 OK). Comparação 100% justa.
 
@@ -237,7 +241,7 @@ Soma cumulativa do custo dia a dia — "o gráfico do dinheiro".
 
 Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valores nativos do modelo — `Spill = max(0, FilaFim − 1 200)` bate exato.
 
-### MAR — `SDDP` — SDDP via `SDDP.Historical`
+### MAR — `SDDP` — SDDP via `SDDP.Historical` (1 trajetória no cenário médio)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -273,7 +277,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 384.9 | 2540 | 2478 | 2478 | 447.2 | 0.0 | 0.0 | 0.0 | 1.16M |
 | **Σ** | — | — | — | **74346** | — | **522.5** | **0.0** | — | **45.16M** |
 
-### MAR — `P_-10` — Monte Carlo determinístico (`adm_out` fixo)
+### MAR — `P_-10` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -309,7 +313,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 0.0 | 2151 | 2478 | 2151 | 0.0 | 0.0 | 326.7 | 2151 | 14.30M |
 | **Σ** | — | — | — | **66581** | — | **727.7** | **7766** | — | **368.52M** |
 
-### MAR — `P_-5` — Monte Carlo determinístico (`adm_out` fixo)
+### MAR — `P_-5` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -345,7 +349,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 0.0 | 2271 | 2478 | 2271 | 0.0 | 0.0 | 207.2 | 2271 | 9.07M |
 | **Σ** | — | — | — | **70047** | — | **964.9** | **4300** | — | **228.11M** |
 
-### MAR — `P_0` — Monte Carlo determinístico (`adm_out` fixo)
+### MAR — `P_0` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -381,7 +385,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 0.0 | 2390 | 2478 | 2390 | 0.0 | 0.0 | 87.7 | 2390 | 3.84M |
 | **Σ** | — | — | — | **73512** | — | **1869** | **834.3** | — | **118.71M** |
 
-### MAR — `P_+5` — Monte Carlo determinístico (`adm_out` fixo)
+### MAR — `P_+5` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -417,7 +421,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 2600 | 2510 | 2478 | 2478 | 2631 | 1431 | 0.0 | 2510 | 30.50M |
 | **Σ** | — | — | — | **74346** | — | **29562** | **0.0** | — | **660.14M** |
 
-### MAR — `P_+10` — Monte Carlo determinístico (`adm_out` fixo)
+### MAR — `P_+10` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -459,7 +463,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 
 Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valores nativos do modelo — `Spill = max(0, FilaFim − 1 200)` bate exato.
 
-### JUL — `SDDP` — SDDP via `SDDP.Historical`
+### JUL — `SDDP` — SDDP via `SDDP.Historical` (1 trajetória no cenário médio)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -495,7 +499,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 702.8 | 2190 | 2093 | 2093 | 800.2 | 0.0 | -0.0 | 0.0 | 2.10M |
 | **Σ** | — | — | — | **63198** | — | **876.3** | **0.0** | — | **80.40M** |
 
-### JUL — `P_-10` — Monte Carlo determinístico (`adm_out` fixo)
+### JUL — `P_-10` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -531,7 +535,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 0.0 | 1784 | 2093 | 1784 | 0.0 | 0.0 | 308.7 | 1784 | 13.51M |
 | **Σ** | — | — | — | **55938** | — | **1740** | **7260** | — | **369.57M** |
 
-### JUL — `P_-5` — Monte Carlo determinístico (`adm_out` fixo)
+### JUL — `P_-5` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -567,7 +571,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 0.0 | 1883 | 2093 | 1883 | 0.0 | 0.0 | 209.6 | 1883 | 9.17M |
 | **Σ** | — | — | — | **58812** | — | **2291** | **4385** | — | **260.88M** |
 
-### JUL — `P_0` — Monte Carlo determinístico (`adm_out` fixo)
+### JUL — `P_0` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -603,7 +607,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 0.0 | 1982 | 2093 | 1982 | 0.0 | 0.0 | 110.5 | 1982 | 4.83M |
 | **Σ** | — | — | — | **61687** | — | **3679** | **1511** | — | **178.86M** |
 
-### JUL — `P_+5` — Monte Carlo determinístico (`adm_out` fixo)
+### JUL — `P_+5` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -639,7 +643,7 @@ Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valor
 | 30 | 1375 | 2081 | 2093 | 2093 | 1363 | 163.2 | 0.0 | 2081 | 6.47M |
 | **Σ** | — | — | — | **63198** | — | **15754** | **0.0** | — | **399.56M** |
 
-### JUL — `P_+10` — Monte Carlo determinístico (`adm_out` fixo)
+### JUL — `P_+10` — Simulação determinística (1 trajetória, `adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
