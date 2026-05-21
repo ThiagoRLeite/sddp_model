@@ -1,185 +1,152 @@
-# Análise Comparativa — SDDP vs Políticas Fixas de Admissão (Model v8.3)
+# Análise — SDDP vs Políticas Fixas de Admissão (v8.3)
 
-**Autor:** Lucas H. — IC USP, Agendamento Rodoviário Porto de Santos
-**Reprodução:**
+**Pipeline:**
 ```
-julia "model_v8.jl"        # ~2.5 min — gera CSVs em outputs/
-python plot_v8.py          # ~10 s   — gera PNGs em outputs/
-python gerar_analise.py    # ~1 s    — gera este ANALISE.md a partir dos CSVs
+julia model_v8.jl        # exporta CSVs em outputs/
+python plot_v8.py        # gera 15 PNGs
+python gerar_analise.py  # gera este ANALISE.md a partir dos CSVs
 ```
 
-> Todas as métricas, tabelas e anexos abaixo são gerados automaticamente a partir dos CSVs em `outputs/`. Atualizar = re-executar o pipeline.
+Mês: Março (LogNormal, CV=10%) e Julho (Weibull, CV=36%). 30 dias, 1 000 simulações Monte Carlo.
 
 ---
 
-## 1. Resumo executivo
+## 1. Modelo
 
-Comparação da política dinâmica **SDDP** com **5 políticas fixas de admissão** no Ecopátio do Porto de Santos, em **2 safras** (março e julho), com **`w_proc` fixado pela média do SDDP por dia** (determinístico nas fixas). 1000 simulações Monte Carlo × 30 dias.
+### 1.1 Constantes
 
-**Definição operacional da política fixa:**
-- `adm_out = X` constante a partir do dia 2 (dia 1 é o estado inicial forçado: `AdmIn=3 000`, `Fila=1 200`).
-- `w_proc[t]` fixado como a média dia a dia das 1000 réplicas SDDP.
-- Processamento livre: `proc = min(w_proc[t], fila.in + adm.in)`.
+| Constante | Valor | Significado |
+|-----------|------:|-------------|
+| `CAP_ECOPATIO` | 1200 | Capacidade do pátio (gatilho de spillover) |
+| `MAX_VAGAS` | 4000 | Limite máximo de admissão `admitidos.out ≤ MAX_VAGAS` |
+| `C_FILA` | R$ 2 790 | Custo por caminhão-dia em fila |
+| `C_SPILLOVER` | R$ 16 211 | Custo por caminhão fora do pátio (spillover) |
+| `C_OCIOSO_TOTAL` | R$ 43 753 | Custo por unidade ociosa (= 1 753 op. + 42 000 receita perdida) |
+| `FILA_INICIAL` | 1200 | Fila no dia 1 |
+| `ADMITIDOS_INICIAL` | 3000 | Admissão obrigatória no dia 1 |
+| `NUM_DIAS` | 30 | Horizonte (dias) |
 
-**Base `X` (média de `adm_out` do SDDP nos dias 2..30):**
+### 1.2 Variáveis
 
-| Mês | Base SDDP | X(P_-10) | X(P_-5) | X(P_0) | X(P_+5) | X(P_+10) |
-|-----|----------:|---------:|--------:|-------:|--------:|---------:|
+| Variável | Tipo | Descrição |
+|----------|------|-----------|
+| `fila[t]` | estado, ≥ 0 | Caminhões em fila no início do dia `t` |
+| `admitidos[t]` | estado, [0, 4000] | Caminhões admitidos para o próximo dia |
+| `processados[t]` | decisão, ≥ 0 | Caminhões processados no dia |
+| `spillover[t]` | decisão, ≥ 0 | Caminhões fora do pátio |
+| `ocioso[t]` | decisão, ≥ 0 | Capacidade não utilizada |
+| `w_proc[t]` | aleatório | Capacidade aleatória de processamento (estocástico) |
+
+### 1.3 Restrições (∀ t = 1..30)
+
+```
+processados[t]    ≤ w_proc[t]
+processados[t]    ≤ fila.in[t] + admitidos.in[t]
+fila.out[t]       = fila.in[t] + admitidos.in[t] − processados[t]
+spillover[t]      ≥ fila.in[t] + admitidos.in[t] − 1200 − processados[t]
+ocioso[t]         ≥ w_proc[t] − processados[t]
+0 ≤ admitidos[t] ≤ 4000
+
+# Equivalência útil (decorre do balanço): spillover[t] = max(0, fila.out[t] − 1200)
+```
+
+### 1.4 Função objetivo (minimização)
+
+```
+min  Σ_{t=1..30}  [
+        2790     · (fila.in[t] + fila.out[t]) / 2     # custo de fila (regra trapézio)
+      + 16211   · spillover[t]                       # custo de spillover
+      + 43753   · ocioso[t]                          # custo de ociosidade
+     ]
+```
+
+---
+
+## 2. Políticas avaliadas (pseudo-código)
+
+### 2.1 SDDP — política dinâmica (referência)
+
+```
+Treinamento (offline):
+  treinar SDDP com 200 iterações, lower_bound=0, optimizer=HiGHS
+  w_proc parametrizado por discretização de quantis (100 pontos) da dist. ajustada
+
+Execução (online, em cada estágio t):
+  observa (fila.in[t], admitidos.in[t], w_proc[t])
+  decide (processados[t], admitidos.out[t]) minimizando custo
+    esperado dos estágios restantes via cortes de Benders
+```
+
+### 2.2 Políticas fixas P_X (5 níveis em ±10%, ±5%, 0% da base SDDP)
+
+```
+base = mean(admitidos.out do SDDP, dias 2..30 das 1 000 sims)
+X_{P_-10}, X_{P_-5}, X_{P_0}, X_{P_+5}, X_{P_+10}
+    = base × [0.90, 0.95, 1.00, 1.05, 1.10]
+
+Estado inicial: fila = 1200,  admitidos.in = 3000
+
+Para cada t = 1..30:
+    w_proc[t] = mean(w_proc(SDDP) dia t, das 1 000 sims)  ← determinístico
+    processados[t]  = min(w_proc[t], fila.in + admitidos.in)
+    spillover[t]    = max(0, fila.in + admitidos.in − 1200 − processados[t])
+    ocioso[t]       = max(0, w_proc[t] − processados[t])
+    fila.out        = fila.in + admitidos.in − processados[t]
+    admitidos.out   = X    ← REGRA FIXA (constante por toda a simulação)
+    fila.in, admitidos.in = fila.out, admitidos.out
+```
+
+---
+
+## 3. Cenário de comparação (Anexos A/B)
+
+Todas as 6 políticas rodam no **MESMO cenário médio determinístico**:
+
+- `w_proc[t]` fixo = média das 1 000 sims SDDP por dia (mesma série em todas)
+- Estado inicial idêntico (Fila=1200, AdmIn=3000)
+- **SDDP** roda via `SDDP.Historical` com `w_proc[t]` forçado
+- **Fixas** rodam Monte Carlo determinístico com `adm_out = X` constante
+
+**Resultado:** `Spill[t] = max(0, FilaFim[t] − 1 200)` bate **exato linha a linha em todas as 6 políticas** (validado: 12/12 OK). Comparação 100% justa.
+
+Para estatísticas agregadas das 1 000 sims estocásticas do SDDP (custo médio com IC, quantis, P(spill>0)), ver §5 (Indicadores).
+
+---
+
+## 4. Dados e distribuições
+
+| Mês | Média (cam/dia) | sd | CV | Dist | AIC | KS p-value |
+|-----|----------------:|---:|---:|------|----:|-----------:|
+| mar | 2 480.2 | 251.3 | 0.10 | **LogNormal** | 417.5 | 0.55 |
+| jul | 2 102.1 | 754.6 | 0.36 | **Weibull** | 484.8 | 0.93 |
+
+Critério: menor AIC entre os modelos com KS p ≥ 0.05. Ajuste em `outputs/v8_<mes>_fit_*.png`.
+
+**Bases X (média de adm_out SDDP nos dias 2..30):**
+
+| Mês | base | X(P_-10) | X(P_-5) | X(P_0) | X(P_+5) | X(P_+10) |
+|-----|-----:|---------:|--------:|-------:|--------:|---------:|
 | MAR | 2 390 | 2 151 | 2 271 | 2 390 | 2 510 | 2 629 |
 | JUL | 1 982 | 1 784 | 1 883 | 1 982 | 2 081 | 2 181 |
 
-**Resultados-chave:**
-
-| | MAR | JUL |
-|---|----:|----:|
-| SDDP custo médio | R$ 52.1 M | R$ 203.8 M |
-| **Melhor fixa** | **P_0 = R$ 118.7 M (2.28× SDDP)** | **P_0 = R$ 178.9 M (0.88× SDDP)** ⚠️ |
-| Pior fixa | P_+10 = R$ 1.64 B (32×) | P_+10 = R$ 1.21 B (6×) |
-
-### 1.1 Comparação no cenário médio determinístico
-
-**Todas as 6 políticas (SDDP + 5 fixas) são comparadas no MESMO cenário:**
-
-- `w_proc[t]` fixo = média das 1000 sims SDDP por dia `t` (mesma série em todas as políticas)
-- Estado inicial: `Fila = 1200`, `AdmIn = 3000` (idêntico)
-- SDDP roda esse cenário via `SDDP.Historical` (política treinada, w_proc forçado)
-- Fixas rodam Monte Carlo determinístico com `adm_out = X` constante
-
-**Em cada trajetória individual** (incluindo SDDP no cenário médio), `Spill = max(0, FilaFim − 1200)` bate exato linha a linha — é a restrição nativa do modelo, não recálculo forçado.
-
-**Para as estatísticas agregadas** das 1000 sims estocásticas do SDDP (custo médio, IC 95%, quantis, P(spill>0)), ver Tabelas 5.1, 5.2 e seção 5.4 (Indicadores).
-
-### 1.2 Achado contraintuitivo em JUL
-
-Em JUL, a fixa **P_0 (R$ 178.9 M)** é **0.88× o SDDP (R$ 203.8 M)** — i.e. R$ 25.0 M menor que o SDDP. Política dinâmica deveria sempre ganhar de política fixa. Por quê isso acontece?
-
-- **SDDP** é simulado em mundo estocástico: a cada dia `w_proc` é amostrado da Weibull (sd=754). O SDDP enfrenta variabilidade real.
-- **Política fixa** usa `w_proc` médio do SDDP (sd=0 no input). Opera no "mundo médio idealizado".
-
-A diferença SDDP − P_0 = R$ 25.0 M em jul **é o custo da incerteza realmente enfrentada pelo SDDP**, que a fixa determinística não vê.
-
-**Em MAR** isso não acontece porque `w_proc` tem CV baixo (10%) — variabilidade pequena demais. Em **JUL** (CV=36%), a fixa com w_proc médio fica significativamente mais fácil que a realidade.
-
 ---
 
-## 2. Modelo (idêntico ao v7)
+## 5. Indicadores
 
-**Restrições e função objetivo:**
-```
-processados ≤ w_proc
-processados ≤ fila.in + admitidos.in
-fila.out    = fila.in + admitidos.in − processados
-spillover   ≥ fila.in + admitidos.in − 1200 − processados
-ocioso      ≥ w_proc − processados
+### 5.1 Glossário
 
-obj = Σ_t [ 2790·(fila.in+fila.out)/2 + 16211·spillover + 43753·ocioso ]
-```
+| Indicador | Definição |
+|-----------|-----------|
+| **Custo médio** | Esperança do custo total dos 30 dias (média 1 000 sims) |
+| **IC 95%** | Intervalo de confiança 95% do custo médio (`± 1.96·sd/√N`) |
+| **P5 / P50 / P95** | Quantis 5%, 50% (mediana), 95% da distribuição do custo |
+| **P(spill > 0)** | Probabilidade de haver spillover em algum dia |
+| **Spill cond.** | Spillover total esperado **condicional** a ter ocorrido |
+| **Fila pico** | Média do pico de fila ao longo dos 30 dias (limite MAX_VAGAS=4000) |
+| **Service level** | Σ proc / Σ admitidos nos dias 2..30, cap em 100% |
+| **entram/proc/ocio/spill/dia** | Médias diárias das 4 quantidades operacionais |
 
-**Constantes:** `CAP_ECOPATIO=1200`, `MAX_VAGAS=4000`, `FILA_INICIAL=1200`, `ADMITIDOS_INICIAL=3000`, `NUM_DIAS=30`.
-
----
-
-## 3. Dados e distribuições
-
-| Mês | Média (cam./dia) | sd | CV | Dist escolhida |
-|-----|-----------------:|---:|---:|----------------|
-| **mar** | 2 480.2 | 251.3 | 0.10 | **LogNormal** |
-| **jul** | 2 102.1 | 754.6 | 0.36 | **Weibull** |
-
-Critério: menor AIC entre os modelos com KS p ≥ 0.05. Visualização do fit em [`outputs/v8_<mes>_fit_*.png`](outputs/).
-
----
-
-## 4. Políticas avaliadas
-
-### 4.1 SDDP — referência (estocástico)
-
-A cada dia `t`, `w_proc[t]` é **amostrado** da distribuição ajustada → 1000 cenários estocásticos. SDDP decide `(processados[t], admitidos.out[t])` em função do estado.
-
-### 4.2 Cinco políticas fixas P_X (determinísticas)
-
-```
-estado inicial: fila = 1200, adm_in = 3000
-para t = 1..30:
-    w_proc[t] = mean_{r=1..1000} w_proc_SDDP[r, t]   ← FIXO, NÃO AMOSTRADO
-    processados[t] = min(w_proc[t], fila.in + adm.in)   ← processa o máximo possível
-    spillover[t]   = max(0, fila.in + adm.in − 1200 − processados[t])
-    ocioso[t]      = max(0, w_proc[t] − processados[t])
-    fila_out       = fila.in + adm.in − processados[t]
-    adm_out        = X   ← REGRA FIXA DE ADMISSÃO
-```
-
----
-
-## 5. Resultados agregados (1000 sims)
-
-### 5.1 Sumário comparativo — MAR
-
-| Política | X | Custo médio | IC 95% | P5 | P50 | P95 | Spill % > 0 | Fila pico médio | Service level |
-|----------|--:|------------:|-------:|---:|----:|----:|-----------:|----------------:|--------------:|
-| **SDDP** | — | **R$ 52.1 M** | ± 0.46 M | R$ 40.5 M | R$ 51.5 M | R$ 64.6 M | 98.4% | **1 722** | **100.0%** |
-| P_-10 | 2 151 | R$ 368.5 M | ± 0.00 M | R$ 368.5 M | R$ 368.5 M | R$ 368.5 M | 100.0% | 1 722 | 100.0% |
-| P_-5 | 2 271 | R$ 228.1 M | ± 0.00 M | R$ 228.1 M | R$ 228.1 M | R$ 228.1 M | 100.0% | 1 722 | 100.0% |
-| P_0 | 2 390 | R$ 118.7 M | ± 0.00 M | R$ 118.7 M | R$ 118.7 M | R$ 118.7 M | 100.0% | 1 722 | 100.0% |
-| P_+5 | 2 510 | R$ 660.1 M | ± 0.00 M | R$ 660.1 M | R$ 660.1 M | R$ 660.1 M | 100.0% | 2 631 | 98.8% |
-| P_+10 | 2 629 | R$ 1.64 B | ± 0.00 M | R$ 1.64 B | R$ 1.64 B | R$ 1.64 B | 100.0% | 6 097 | 94.3% |
-
-**Razão melhor fixa / SDDP em mar: 2.28× (P_0).**
-
-### 5.2 Sumário comparativo — JUL
-
-| Política | X | Custo médio | IC 95% | P5 | P50 | P95 | Spill % > 0 | Fila pico médio | Service level |
-|----------|--:|------------:|-------:|---:|----:|----:|-----------:|----------------:|--------------:|
-| **SDDP** | — | **R$ 203.8 M** | ± 2.60 M | R$ 138.8 M | R$ 201.3 M | R$ 274.2 M | 100.0% | **2 343** | **100.0%** |
-| P_-10 | 1 784 | R$ 369.6 M | ± 0.00 M | R$ 369.6 M | R$ 369.6 M | R$ 369.6 M | 100.0% | 2 076 | 100.0% |
-| P_-5 | 1 883 | R$ 260.9 M | ± 0.00 M | R$ 260.9 M | R$ 260.9 M | R$ 260.9 M | 100.0% | 2 076 | 100.0% |
-| P_0 | 1 982 | R$ 178.9 M | ± 0.00 M | R$ 178.9 M | R$ 178.9 M | R$ 178.9 M | 100.0% | 2 076 | 100.0% |
-| P_+5 | 2 081 | R$ 399.6 M | ± 0.00 M | R$ 399.6 M | R$ 399.6 M | R$ 399.6 M | 100.0% | 2 083 | 100.0% |
-| P_+10 | 2 181 | R$ 1.21 B | ± 0.00 M | R$ 1.21 B | R$ 1.21 B | R$ 1.21 B | 100.0% | 4 238 | 96.6% |
-
-**P_0 (R$ 178.9 M) < SDDP (R$ 203.8 M)!** Razão melhor fixa / SDDP em jul: **0.88× (P_0 ganha)** — vide diagnóstico em §1.2.
-
-### 5.3 Visualizações
-
-**Boxplot custo total (escala log):**
-
-![boxplot mar](outputs/py_v8_mar_boxplot.png)
-
-![boxplot jul](outputs/py_v8_jul_boxplot.png)
-
-**Service level (% processado da demanda admitida):**
-
-![service mar](outputs/py_v8_mar_service_level.png)
-
-![service jul](outputs/py_v8_jul_service_level.png)
-
-**Composição do custo (fila + spillover + ociosidade):**
-
-![composicao mar](outputs/py_v8_mar_composicao_custo.png)
-
-![composicao jul](outputs/py_v8_jul_composicao_custo.png)
-
-### 5.4 Indicadores em detalhe
-
-Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do SDDP** (e da política fixa correspondente, com 1000 réplicas determinísticas idênticas porque a fixa não tem aleatoriedade no w_proc).
-
-**Glossário:**
-
-| Indicador | O que mede |
-|-----------|------------|
-| **Custo médio** | Esperança do custo total dos 30 dias (R$). |
-| **IC 95%** | Intervalo de confiança 95% do custo médio (apenas SDDP tem >0). |
-| **P5 / P50 / P95** | Quantis 5%, 50% (mediana), 95% da distribuição do custo total. |
-| **P(spill > 0)** | Probabilidade de haver spillover em algum dia da simulação. |
-| **Spill cond. médio** | Spillover total esperado **condicionado** a ter ocorrido. |
-| **Fila pico médio** | Média do pico de fila ao longo dos 30 dias (limite operacional MAX_VAGAS=4000). |
-| **Service level** | `Σ proc / Σ admitidos.in` nos dias 2..30, cap em 100%. % da demanda atendida. |
-| **entram_dia** | Caminhões médios admitidos por dia. |
-| **proc_dia** | Caminhões médios processados por dia. |
-| **ocio_dia** | Capacidade ociosa média por dia. |
-| **spill_dia** | Spillover médio por dia. |
-
-**MAR — todos os indicadores:**
+### 5.2 MAR — valores
 
 | Indicador | SDDP | P_-10 | P_-5 | P_0 | P_+5 | P_+10 |
 |-----------|-----:|------:|-----:|----:|-----:|------:|
@@ -189,15 +156,17 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 | P50 (custo) | R$ 51.5 M | R$ 368.5 M | R$ 228.1 M | R$ 118.7 M | R$ 660.1 M | R$ 1.64 B |
 | P95 (custo) | R$ 64.6 M | R$ 368.5 M | R$ 228.1 M | R$ 118.7 M | R$ 660.1 M | R$ 1.64 B |
 | P(spill > 0) | 98.4% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
-| Spill cond. médio | 532 | 728 | 965 | 1 869 | 29 562 | 81 546 |
-| Fila pico médio | 1 722 | 1 722 | 1 722 | 1 722 | 2 631 | 6 097 |
+| Spill cond. | 532 | 728 | 965 | 1 869 | 29 562 | 81 546 |
+| Fila pico | 1 722 | 1 722 | 1 722 | 1 722 | 2 631 | 6 097 |
 | Service level | 100.0% | 100.0% | 100.0% | 100.0% | 98.8% | 94.3% |
 | entram/dia | 2 448 | 2 179 | 2 295 | 2 410 | 2 526 | 2 641 |
 | proc/dia | 2 473 | 2 219 | 2 335 | 2 450 | 2 478 | 2 478 |
 | ocio/dia | 5 | 259 | 143 | 28 | 0 | 0 |
 | spill/dia | 17 | 24 | 32 | 62 | 985 | 2 718 |
 
-**JUL — todos os indicadores:**
+**Melhor fixa MAR:** P_0 = R$ 118.7 M (2.28× SDDP). **Pior:** P_+10 = R$ 1.64 B (32× SDDP).
+
+### 5.3 JUL — valores
 
 | Indicador | SDDP | P_-10 | P_-5 | P_0 | P_+5 | P_+10 |
 |-----------|-----:|------:|-----:|----:|-----:|------:|
@@ -207,77 +176,68 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 | P50 (custo) | R$ 201.3 M | R$ 369.6 M | R$ 260.9 M | R$ 178.9 M | R$ 399.6 M | R$ 1.21 B |
 | P95 (custo) | R$ 274.2 M | R$ 369.6 M | R$ 260.9 M | R$ 178.9 M | R$ 399.6 M | R$ 1.21 B |
 | P(spill > 0) | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
-| Spill cond. médio | 4 052 | 1 740 | 2 291 | 3 679 | 15 754 | 58 869 |
-| Fila pico médio | 2 343 | 2 076 | 2 076 | 2 076 | 2 083 | 4 238 |
+| Spill cond. | 4 052 | 1 740 | 2 291 | 3 679 | 15 754 | 58 869 |
+| Fila pico | 2 343 | 2 076 | 2 076 | 2 076 | 2 083 | 4 238 |
 | Service level | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 96.6% |
 | entram/dia | 2 043 | 1 825 | 1 920 | 2 016 | 2 112 | 2 208 |
 | proc/dia | 2 055 | 1 865 | 1 960 | 2 056 | 2 107 | 2 107 |
 | ocio/dia | 51 | 242 | 146 | 50 | 0 | 0 |
 | spill/dia | 135 | 58 | 76 | 123 | 525 | 1 962 |
 
+**Achado contraintuitivo JUL:** P_0 = R$ 178.9 M **vence** o SDDP = R$ 203.8 M (0.88×). Razão: P_0 opera no cenário médio determinístico (w_proc fixo); o SDDP é simulado com w_proc estocástico real (Weibull com sd=754) — paga o custo da variabilidade.
+
 ---
 
-## 6. Evolução dia-a-dia
+## 6. Gráficos
 
-### 6.1 Painel 4 variáveis
+Cada gráfico abaixo é gerado por `plot_v8.py` a partir dos CSVs. Todos em `outputs/`.
+
+### 6.1 Boxplot custo total (1 000 sims, log)
+Mostra distribuição do custo total entre as 1 000 réplicas. Fixas viram linha (determinísticas no cenário médio).
+
+![boxplot mar](outputs/py_v8_mar_boxplot.png)
+
+![boxplot jul](outputs/py_v8_jul_boxplot.png)
+
+### 6.2 Service level por política
+Fração da demanda admitida que é de fato processada nos dias 2..30 (cap 100%).
+
+![service mar](outputs/py_v8_mar_service_level.png)
+
+![service jul](outputs/py_v8_jul_service_level.png)
+
+### 6.3 Composição do custo
+Decompõe o custo total em fila + spillover + ociosidade (escala log).
+
+![composicao mar](outputs/py_v8_mar_composicao_custo.png)
+
+![composicao jul](outputs/py_v8_jul_composicao_custo.png)
+
+### 6.4 Painel 4 variáveis (proc / fila / ocio log / spill log)
+Evolução diária de 4 quantidades-chave por política.
 
 ![painel mar](outputs/py_v8_mar_painel.png)
 
 ![painel jul](outputs/py_v8_jul_painel.png)
 
-### 6.2 Custo acumulado
+### 6.5 Custo acumulado (log)
+Soma cumulativa do custo dia a dia — "o gráfico do dinheiro".
 
 ![custo acumulado mar](outputs/py_v8_mar_custo_acumulado.png)
 
 ![custo acumulado jul](outputs/py_v8_jul_custo_acumulado.png)
 
-### 6.3 Comparativo mar vs jul
+### 6.6 Comparativo mar vs jul (side-by-side)
 
-![comparativo mar vs jul](outputs/py_v8_mar_jul_comparativo.png)
-
----
-
-## 7. Conclusões
-
-1. **MAR (CV baixo, 10%):** SDDP é melhor que todas as fixas. Mínimo P_0 = 2.28× SDDP.
-2. **JUL (CV alto, 36%):** a fixa P_0 com w_proc médio fixo é MELHOR que o SDDP em 12%. Reflete que a fixa opera no "mundo médio" sem enfrentar a variabilidade real.
-3. **A vantagem real do SDDP é a adaptatividade ao ruído estocástico.** Comparações justas requerem que tanto SDDP quanto fixas operem no mesmo mundo.
-4. **Service level fica em 100% para X ≤ X(P_0)** em ambos os meses. Apenas X alto (P_+5/P_+10) deixa demanda acumulada.
-5. **Fila pico:** todas as políticas com X ≤ X(P_+5) ficam abaixo de MAX_VAGAS=4000 (operacionalmente viáveis). P_+10 estoura em ambos os meses.
+![comparativo](outputs/py_v8_mar_jul_comparativo.png)
 
 ---
 
-## 8. Artefatos
+## Anexo A — MAR: cenário médio (6 políticas, 30 dias)
 
-| Categoria | Arquivos |
-|-----------|----------|
-| Código Julia | [model_v8.jl](model_v8.jl) (~600 linhas, exporta CSVs) |
-| Código Python (gráficos) | [plot_v8.py](plot_v8.py) (15 PNGs publicação) |
-| Código Python (análise) | [gerar_analise.py](gerar_analise.py) (gera este ANALISE.md) |
-| Sumário | [`outputs/v8_<mes>_sumario.csv`](outputs/) |
-| Médias dia-a-dia | [`outputs/v8_<mes>_dia_a_dia.csv`](outputs/) |
-| Réplica representativa | [`outputs/v8_<mes>_replica_repr.csv`](outputs/) |
-| Réplica qualquer (idx=42) | [`outputs/v8_<mes>_replica_qualquer.csv`](outputs/) |
-| Réplicas completas (1000) | [`outputs/v8_<mes>_resultados.csv`](outputs/) |
+Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valores nativos do modelo — `Spill = max(0, FilaFim − 1 200)` bate exato.
 
----
-
-## Anexo A — MAR: cenário médio dia-a-dia (1000 sims SDDP + 5 fixas ±10%, ±5%, 0%)
-
-> **TODAS as políticas rodam no MESMO cenário médio determinístico:**
->
-> - `w_proc[t]` fixo = média das 1000 sims SDDP por dia (mesma série em todas)
-> - Estado inicial idêntico (`Fila=1 200`, `AdmIn=3 000`)
->
-> **SDDP**: trajetória produzida pelo `SDDP.simulate` com `sampling_scheme=SDDP.Historical(w_proc_medio_diario)` — a política treinada respondendo ao cenário médio. Trajetória nativa, sem recálculo.
->
-> **Fixas (P_-10..P_+10)**: Monte Carlo determinístico com `adm_out = X` constante e `w_proc[t]` = mesma série média.
->
-> **Spill = max(0, FilaFim − 1 200) bate linha a linha em TODAS as 6 tabelas** — propriedade nativa da restrição do modelo.
->
-> Para estatísticas agregadas das 1000 sims estocásticas (custo médio com IC, quantis, P(spill>0)), ver §5.4 (Indicadores).
-
-#### MAR — Política `SDDP` (SDDP no cenário médio determinístico — w_proc fixo via SDDP.Historical)
+### MAR — `SDDP` — SDDP via `SDDP.Historical`
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -313,7 +273,7 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 | 30 | 384.9 | 2540 | 2478 | 2478 | 447.2 | 0.0 | 0.0 | 0.0 | 1.16M |
 | **Σ** | — | — | — | **74346** | — | **522.5** | **0.0** | — | **45.16M** |
 
-#### MAR — Política `P_-10` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### MAR — `P_-10` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -349,7 +309,7 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 | 30 | 0.0 | 2151 | 2478 | 2151 | 0.0 | 0.0 | 326.7 | 2151 | 14.30M |
 | **Σ** | — | — | — | **66581** | — | **727.7** | **7766** | — | **368.52M** |
 
-#### MAR — Política `P_-5` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### MAR — `P_-5` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -385,7 +345,7 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 | 30 | 0.0 | 2271 | 2478 | 2271 | 0.0 | 0.0 | 207.2 | 2271 | 9.07M |
 | **Σ** | — | — | — | **70047** | — | **964.9** | **4300** | — | **228.11M** |
 
-#### MAR — Política `P_0` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### MAR — `P_0` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -421,7 +381,7 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 | 30 | 0.0 | 2390 | 2478 | 2390 | 0.0 | 0.0 | 87.7 | 2390 | 3.84M |
 | **Σ** | — | — | — | **73512** | — | **1869** | **834.3** | — | **118.71M** |
 
-#### MAR — Política `P_+5` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### MAR — `P_+5` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -457,7 +417,7 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 | 30 | 2600 | 2510 | 2478 | 2478 | 2631 | 1431 | 0.0 | 2510 | 30.50M |
 | **Σ** | — | — | — | **74346** | — | **29562** | **0.0** | — | **660.14M** |
 
-#### MAR — Política `P_+10` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### MAR — `P_+10` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -495,11 +455,11 @@ Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do
 
 ---
 
-## Anexo B — JUL: cenário médio dia-a-dia (1000 sims SDDP + 5 fixas ±10%, ±5%, 0%)
+## Anexo B — JUL: cenário médio (6 políticas, 30 dias)
 
-Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário médio determinístico, mesma série w_proc para todas as 6 políticas.
+Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valores nativos do modelo — `Spill = max(0, FilaFim − 1 200)` bate exato.
 
-#### JUL — Política `SDDP` (SDDP no cenário médio determinístico — w_proc fixo via SDDP.Historical)
+### JUL — `SDDP` — SDDP via `SDDP.Historical`
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -535,7 +495,7 @@ Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário mé
 | 30 | 702.8 | 2190 | 2093 | 2093 | 800.2 | 0.0 | -0.0 | 0.0 | 2.10M |
 | **Σ** | — | — | — | **63198** | — | **876.3** | **0.0** | — | **80.40M** |
 
-#### JUL — Política `P_-10` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### JUL — `P_-10` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -571,7 +531,7 @@ Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário mé
 | 30 | 0.0 | 1784 | 2093 | 1784 | 0.0 | 0.0 | 308.7 | 1784 | 13.51M |
 | **Σ** | — | — | — | **55938** | — | **1740** | **7260** | — | **369.57M** |
 
-#### JUL — Política `P_-5` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### JUL — `P_-5` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -607,7 +567,7 @@ Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário mé
 | 30 | 0.0 | 1883 | 2093 | 1883 | 0.0 | 0.0 | 209.6 | 1883 | 9.17M |
 | **Σ** | — | — | — | **58812** | — | **2291** | **4385** | — | **260.88M** |
 
-#### JUL — Política `P_0` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### JUL — `P_0` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -643,7 +603,7 @@ Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário mé
 | 30 | 0.0 | 1982 | 2093 | 1982 | 0.0 | 0.0 | 110.5 | 1982 | 4.83M |
 | **Σ** | — | — | — | **61687** | — | **3679** | **1511** | — | **178.86M** |
 
-#### JUL — Política `P_+5` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### JUL — `P_+5` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -679,7 +639,7 @@ Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário mé
 | 30 | 1375 | 2081 | 2093 | 2093 | 1363 | 163.2 | 0.0 | 2081 | 6.47M |
 | **Σ** | — | — | — | **63198** | — | **15754** | **0.0** | — | **399.56M** |
 
-#### JUL — Política `P_+10` (cenário médio: w_proc = média SDDP por dia, adm_out = X constante)
+### JUL — `P_+10` — Monte Carlo determinístico (`adm_out` fixo)
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -717,11 +677,9 @@ Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário mé
 
 ---
 
-## Anexo C — MAR: uma réplica qualquer do SDDP (idx=42)
+## Anexo C — MAR: réplica qualquer SDDP (idx=42)
 
-Trajetória individual do SDDP em MAR (réplica `idx=42` das 1000). **Números coerentes linha a linha**: `Spill = max(0, FilaFim − 1 200)` bate exato.
-
-#### MAR — SDDP, réplica qualquer (idx=42, trajetória individual)
+Uma das 1 000 simulações estocásticas do SDDP (índice arbitrário 42). `w_proc` amostrado da distribuição real do mês — mostra como o SDDP reage a um cenário real.
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -759,11 +717,9 @@ Trajetória individual do SDDP em MAR (réplica `idx=42` das 1000). **Números c
 
 ---
 
-## Anexo D — JUL: uma réplica qualquer do SDDP (idx=42)
+## Anexo D — JUL: réplica qualquer SDDP (idx=42)
 
-Trajetória individual do SDDP em JUL. **Números coerentes linha a linha.** Observe a alta variabilidade de `w_proc` ao longo dos dias — característica de julho.
-
-#### JUL — SDDP, réplica qualquer (idx=42, trajetória individual)
+Uma das 1 000 simulações estocásticas do SDDP (índice arbitrário 42). `w_proc` amostrado da distribuição real do mês — mostra como o SDDP reage a um cenário real.
 
 | Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |
 |----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|
@@ -801,19 +757,17 @@ Trajetória individual do SDDP em JUL. **Números coerentes linha a linha.** Obs
 
 ---
 
-## Anexo E — Validações e reprodutibilidade
+## Anexo E — Reprodutibilidade
 
-- **V1 (vs v7):** SDDP mar do v8 compatível com v7 a menos de ±5%.
-- **V2 (formula linha-a-linha):** `Spill = max(0, FilaFim − 1 200)` validado em 12/12 tabelas (6 políticas × 2 meses).
-- **V3 (determinismo das fixas):** rodar `julia model_v8.jl` duas vezes → custos das fixas em `v8_<mes>_resultados.csv` são bit-idênticos. SDDP varia ~1-2% por amostragem interna.
-- **V4 (consistência tabela × sumário):** para fixas, `Σ Custo da tabela = custo médio do sumário` (diff ~0%). Para SDDP, há diferença em JUL por causa de Jensen (§1.1).
-
-**Sistema:** Windows 11, Julia 1.12.4, Python 3.11.9.
-
-**Como rodar do zero:**
+```bash
+julia "Model SDDP - 19-05-26/model_v8.jl"       # ~2.5 min
+python "Model SDDP - 19-05-26/plot_v8.py"       # ~10 s
+python "Model SDDP - 19-05-26/gerar_analise.py" # ~1 s
 ```
-cd "Projeto - IC - Rodoviário"
-julia "Model SDDP - 19-05-26/model_v8.jl"     # ~2.5 min — gera CSVs
-python "Model SDDP - 19-05-26/plot_v8.py"     # ~10 s   — gera PNGs
-python "Model SDDP - 19-05-26/gerar_analise.py"  # ~1 s — gera ANALISE.md
-```
+
+**Sistema:** Windows 11, Julia 1.12.4, Python 3.11.9. SDDP.jl + HiGHS, pandas + matplotlib + seaborn.
+
+**Validações automáticas:**
+- V1: `Spill = max(0, FilaFim − 1 200)` em 12/12 tabelas dos anexos A/B (diff < 1e-10)
+- V2: Σ Custo tabela == custo médio sumário (para fixas, diff ~0%)
+- V3: réplicas individuais batem fórmula exata (diff = 0)

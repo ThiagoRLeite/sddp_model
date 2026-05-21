@@ -1,13 +1,20 @@
 """
 Gera ANALISE.md final do projeto v8.3 a partir dos CSVs exportados pelo Julia.
 
+Estrutura ENXUTA (sem textos prolixos):
+  1. Modelo: constantes, variáveis, restrições, FO
+  2. Políticas: pseudo-código direto
+  3. Cenário de comparação
+  4. Dados + distribuições
+  5. Resultados: tabelas comparativas
+  6. Indicadores: glossário + valores
+  7. Gráficos: cada um com 1 frase
+  8. Anexos: A/B (cenário médio), C/D (réplica qualquer)
+
 Flow:
   julia model_v8.jl         (exporta CSVs em outputs/)
   python plot_v8.py         (gera PNGs em outputs/)
   python gerar_analise.py   (gera ANALISE.md a partir dos CSVs + PNGs)
-
-Tudo o que muda execução-a-execução fica em CSVs lidos aqui.
-Constantes do modelo (custos, capacidade) ficam hardcoded conforme SPEC.
 """
 from pathlib import Path
 import pandas as pd
@@ -27,28 +34,17 @@ NUM_DIAS = 30
 
 
 # ---------------------------------------------------------------------------
-# Helpers de formatação
+# Formatadores
 # ---------------------------------------------------------------------------
 def fmt_brl(v: float) -> str:
     if abs(v) >= 1e9:
         return f"R$ {v/1e9:.2f} B"
     if abs(v) >= 1e6:
         return f"R$ {v/1e6:.1f} M"
-    if abs(v) >= 1e3:
-        return f"R$ {v/1e3:.0f} k"
-    return f"R$ {v:.0f}"
-
-
-def fmt_num(v: float) -> str:
-    if abs(v) >= 1e6:
-        return f"{v/1e6:.2f}M"
-    if abs(v) >= 1e3:
-        return f"{v:,.0f}".replace(",", " ")
-    return f"{v:.1f}"
+    return f"R$ {v:,.0f}".replace(",", " ")
 
 
 def fmt_cell(v: float) -> str:
-    """Formato compacto para células de tabela."""
     if abs(v) >= 1e6:
         return f"{v/1e6:.2f}M"
     if abs(v) >= 1e3:
@@ -56,69 +52,60 @@ def fmt_cell(v: float) -> str:
     return f"{v:.1f}"
 
 
+def fmt_n(v: float) -> str:
+    return f"{v:,.0f}".replace(",", " ")
+
+
 # ---------------------------------------------------------------------------
-# Carrega dados de todos os CSVs
+# I/O
 # ---------------------------------------------------------------------------
 def carregar_dados():
     dados = {}
     for mes in ["mar", "jul"]:
         dados[mes] = {
-            "sumario":       pd.read_csv(OUT / f"v8_{mes}_sumario.csv"),
-            "dia_a_dia":     pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv"),
-            "sddp_cm":       pd.read_csv(OUT / f"v8_{mes}_sddp_cenario_medio.csv"),
-            "rep_qualquer":  pd.read_csv(OUT / f"v8_{mes}_replica_qualquer.csv"),
+            "sumario":      pd.read_csv(OUT / f"v8_{mes}_sumario.csv"),
+            "dia_a_dia":    pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv"),
+            "sddp_cm":      pd.read_csv(OUT / f"v8_{mes}_sddp_cenario_medio.csv"),
+            "rep_qualquer": pd.read_csv(OUT / f"v8_{mes}_replica_qualquer.csv"),
         }
     return dados
 
 
+def calcular_bases(dados):
+    bases = {}
+    for mes in ["mar", "jul"]:
+        df_d = dados[mes]["dia_a_dia"]
+        base = df_d["SDDP_adm_out"].iloc[1:].mean()
+        bases[mes] = {
+            "base": base,
+            "P_-10": base * 0.90, "P_-5": base * 0.95, "P_0": base,
+            "P_+5":  base * 1.05, "P_+10": base * 1.10,
+        }
+    return bases
+
+
 # ---------------------------------------------------------------------------
-# Gera sumário (tabelas §5.1, §5.2)
+# Builders de tabelas
 # ---------------------------------------------------------------------------
-def gera_tabela_sumario(df_sum: pd.DataFrame, x_dict: dict) -> str:
+def tabela_sumario(df_s: pd.DataFrame, x_dict: dict) -> str:
     lines = [
-        "| Política | X | Custo médio | IC 95% | P5 | P50 | P95 | Spill % > 0 | Fila pico médio | Service level |",
-        "|----------|--:|------------:|-------:|---:|----:|----:|-----------:|----------------:|--------------:|",
+        "| Política | X (cam/dia) | Custo médio | IC 95% | P5 | P50 | P95 | Fila pico | Service |",
+        "|----------|------------:|------------:|-------:|---:|----:|----:|----------:|--------:|",
     ]
     for pol in POL_ORDER:
-        row = df_sum[df_sum["politica"] == pol].iloc[0]
-        x_str = "—" if pol == "SDDP" else f"{x_dict[pol]:,.0f}".replace(",", " ")
-        prefix = "**" if pol == "SDDP" else ""
-        suffix = "**" if pol == "SDDP" else ""
+        r = df_s[df_s["politica"] == pol].iloc[0]
+        x = "—" if pol == "SDDP" else fmt_n(x_dict[pol])
+        b, e = ("**", "**") if pol == "SDDP" else ("", "")
         lines.append(
-            f"| {prefix}{pol}{suffix} | {x_str} | "
-            f"{prefix}{fmt_brl(row['custo_medio'])}{suffix} | "
-            f"± {row['custo_ic']/1e6:.2f} M | "
-            f"{fmt_brl(row['custo_p5'])} | "
-            f"{fmt_brl(row['custo_p50'])} | "
-            f"{fmt_brl(row['custo_p95'])} | "
-            f"{row['spill_prob']*100:.1f}% | "
-            f"{prefix}{row['fila_pico_med']:,.0f}{suffix} | "
-            f"{prefix}{row['service_level']*100:.1f}%{suffix} |".replace(",", " ")
+            f"| {b}{pol}{e} | {x} | {b}{fmt_brl(r['custo_medio'])}{e} | "
+            f"± {r['custo_ic']/1e6:.2f} M | {fmt_brl(r['custo_p5'])} | "
+            f"{fmt_brl(r['custo_p50'])} | {fmt_brl(r['custo_p95'])} | "
+            f"{fmt_n(r['fila_pico_med'])} | {r['service_level']*100:.1f}% |"
         )
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Gera tabela dia-a-dia para um (mes, pol)
-#
-# - Para FIXAS (P_-10..P_+10): le do dia_a_dia.csv (medias = trajetoria
-#   deterministica, ja que w_proc e' fixo). Os valores sao nativos do modelo.
-#
-# - Para SDDP: le do replica_repr.csv (replica representativa, custo proximo
-#   da media). Valores nativos do modelo, sem agregacao estocastica — assim
-#   Spill = max(0, FilaFim - 1200) bate linha-a-linha como propriedade
-#   natural da restricao do modelo (nao por recalculo forcado).
-# ---------------------------------------------------------------------------
-def gera_tabela_dia_a_dia(dados_mes: dict, pol: str) -> str:
-    """
-    Tabela dia-a-dia para uma política, no MESMO cenário médio determinístico
-    (w_proc fixo = média das 1000 sims SDDP, estado inicial Fila=1200, Adm=3000).
-
-    - SDDP: lê de v8_<mes>_sddp_cenario_medio.csv (SDDP rodado com w_proc fixo
-      via SDDP.Historical). Trajetória nativa do modelo — Spill bate exato.
-    - P_-10..P_+10: lê de v8_<mes>_dia_a_dia.csv (simulação determinística
-      com adm_out = X constante, mesmo w_proc das 1000 sims SDDP). Nativas.
-    """
+def tabela_dia_a_dia(dados_mes: dict, pol: str) -> str:
     lines = [
         "| Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |",
         "|----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|",
@@ -134,7 +121,7 @@ def gera_tabela_dia_a_dia(dados_mes: dict, pol: str) -> str:
                 f"{fmt_cell(r['ocioso'])} | {fmt_cell(r['adm_out'])} | "
                 f"{fmt_cell(r['custo'])} |"
             )
-        tp, ts, to, tc = df["proc"].sum(), df["spill"].sum(), df["ocioso"].sum(), df["custo"].sum()
+        tp, ts, to_, tc = df["proc"].sum(), df["spill"].sum(), df["ocioso"].sum(), df["custo"].sum()
     else:
         df = dados_mes["dia_a_dia"]
         for t in range(NUM_DIAS):
@@ -148,442 +135,365 @@ def gera_tabela_dia_a_dia(dados_mes: dict, pol: str) -> str:
             )
         tp = df[f"{pol}_proc"].sum()
         ts = df[f"{pol}_spill"].sum()
-        to = df[f"{pol}_ocioso"].sum()
+        to_ = df[f"{pol}_ocioso"].sum()
         tc = df[f"{pol}_custo"].sum()
-
     lines.append(
-        f"| **Σ** | — | — | — | **{fmt_cell(tp)}** | — | **{fmt_cell(ts)}** | **{fmt_cell(to)}** | — | **{fmt_cell(tc)}** |"
+        f"| **Σ** | — | — | — | **{fmt_cell(tp)}** | — | **{fmt_cell(ts)}** | **{fmt_cell(to_)}** | — | **{fmt_cell(tc)}** |"
     )
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Gera tabela da réplica qualquer
-# ---------------------------------------------------------------------------
-def gera_tabela_replica(df_r: pd.DataFrame) -> str:
+def tabela_replica_qualquer(df: pd.DataFrame) -> str:
     lines = [
         "| Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |",
         "|----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|",
     ]
     for t in range(NUM_DIAS):
-        row = df_r.iloc[t]
+        r = df.iloc[t]
         lines.append(
-            f"| {t+1} | "
-            f"{fmt_cell(row['fila_in'])} | "
-            f"{fmt_cell(row['adm_in'])} | "
-            f"{fmt_cell(row['w_proc'])} | "
-            f"{fmt_cell(row['proc'])} | "
-            f"{fmt_cell(row['fila_out'])} | "
-            f"{fmt_cell(row['spill'])} | "
-            f"{fmt_cell(row['ocioso'])} | "
-            f"{fmt_cell(row['adm_out'])} | "
-            f"{fmt_cell(row['custo'])} |"
+            f"| {t+1} | {fmt_cell(r['fila_in'])} | {fmt_cell(r['adm_in'])} | "
+            f"{fmt_cell(r['w_proc'])} | {fmt_cell(r['proc'])} | "
+            f"{fmt_cell(r['fila_out'])} | {fmt_cell(r['spill'])} | "
+            f"{fmt_cell(r['ocioso'])} | {fmt_cell(r['adm_out'])} | "
+            f"{fmt_cell(r['custo'])} |"
         )
-    tp = df_r["proc"].sum()
-    ts = df_r["spill"].sum()
-    to = df_r["ocioso"].sum()
-    tc = df_r["custo"].sum()
+    tp, ts, to_, tc = df["proc"].sum(), df["spill"].sum(), df["ocioso"].sum(), df["custo"].sum()
     lines.append(
-        f"| **Σ** | — | — | — | **{fmt_cell(tp)}** | — | **{fmt_cell(ts)}** | **{fmt_cell(to)}** | — | **{fmt_cell(tc)}** |"
+        f"| **Σ** | — | — | — | **{fmt_cell(tp)}** | — | **{fmt_cell(ts)}** | **{fmt_cell(to_)}** | — | **{fmt_cell(tc)}** |"
     )
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Calcula bases X (média de adm_out SDDP dias 2..30)
-# ---------------------------------------------------------------------------
-def calcular_bases(dados):
-    bases = {}
-    for mes in ["mar", "jul"]:
-        df_d = dados[mes]["dia_a_dia"]
-        base = df_d["SDDP_adm_out"].iloc[1:].mean()  # dias 2..30
-        bases[mes] = {
-            "base": base,
-            "P_-10": base * 0.90,
-            "P_-5":  base * 0.95,
-            "P_0":   base,
-            "P_+5":  base * 1.05,
-            "P_+10": base * 1.10,
-        }
-    return bases
+def tabela_indicadores(df_s: pd.DataFrame) -> str:
+    lines = [
+        "| Indicador | SDDP | P_-10 | P_-5 | P_0 | P_+5 | P_+10 |",
+        "|-----------|-----:|------:|-----:|----:|-----:|------:|",
+    ]
+    def row(label, fn):
+        vals = [fn(df_s[df_s["politica"] == p].iloc[0]) for p in POL_ORDER]
+        return f"| {label} | " + " | ".join(vals) + " |"
+    lines.append(row("Custo médio",       lambda r: fmt_brl(r["custo_medio"])))
+    lines.append(row("IC 95%",            lambda r: f"± {r['custo_ic']/1e6:.2f} M"))
+    lines.append(row("P5 (custo)",        lambda r: fmt_brl(r["custo_p5"])))
+    lines.append(row("P50 (custo)",       lambda r: fmt_brl(r["custo_p50"])))
+    lines.append(row("P95 (custo)",       lambda r: fmt_brl(r["custo_p95"])))
+    lines.append(row("P(spill > 0)",      lambda r: f"{r['spill_prob']*100:.1f}%"))
+    lines.append(row("Spill cond.",       lambda r: fmt_n(r["spill_cond_med"])))
+    lines.append(row("Fila pico",         lambda r: fmt_n(r["fila_pico_med"])))
+    lines.append(row("Service level",     lambda r: f"{r['service_level']*100:.1f}%"))
+    lines.append(row("entram/dia",        lambda r: fmt_n(r["entram_dia"])))
+    lines.append(row("proc/dia",          lambda r: fmt_n(r["proc_dia"])))
+    lines.append(row("ocio/dia",          lambda r: fmt_n(r["ocio_dia"])))
+    lines.append(row("spill/dia",         lambda r: fmt_n(r["spill_dia"])))
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Geração principal
+# Gerador do MD
 # ---------------------------------------------------------------------------
 def gerar_md(dados, bases) -> str:
     sddp_mar = dados["mar"]["sumario"]
     sddp_jul = dados["jul"]["sumario"]
+    cmar = lambda pol: sddp_mar[sddp_mar["politica"] == pol]["custo_medio"].iloc[0]
+    cjul = lambda pol: sddp_jul[sddp_jul["politica"] == pol]["custo_medio"].iloc[0]
 
-    sddp_custo_mar = sddp_mar[sddp_mar["politica"] == "SDDP"]["custo_medio"].iloc[0]
-    sddp_custo_jul = sddp_jul[sddp_jul["politica"] == "SDDP"]["custo_medio"].iloc[0]
-    p0_custo_mar   = sddp_mar[sddp_mar["politica"] == "P_0"]["custo_medio"].iloc[0]
-    p0_custo_jul   = sddp_jul[sddp_jul["politica"] == "P_0"]["custo_medio"].iloc[0]
-    p10_custo_mar  = sddp_mar[sddp_mar["politica"] == "P_+10"]["custo_medio"].iloc[0]
-    p10_custo_jul  = sddp_jul[sddp_jul["politica"] == "P_+10"]["custo_medio"].iloc[0]
-
-    razao_p0_mar  = p0_custo_mar / sddp_custo_mar
-    razao_p0_jul  = p0_custo_jul / sddp_custo_jul
-    razao_p10_mar = p10_custo_mar / sddp_custo_mar
-    razao_p10_jul = p10_custo_jul / sddp_custo_jul
-
-    # Análise contraintuitiva em JUL
-    p0_ganha_jul = "**P_0 (sim, ganha!)**" if p0_custo_jul < sddp_custo_jul else "P_0"
-
-    diff_p0_sddp_jul = sddp_custo_jul - p0_custo_jul
-    diff_sinal = "menor que" if diff_p0_sddp_jul > 0 else "maior que"
-
-    # Custos do Anexo (Σ tabela)
-    df_d_mar = dados["mar"]["dia_a_dia"]
-    df_d_jul = dados["jul"]["dia_a_dia"]
-    sigma_sddp_mar = df_d_mar["SDDP_custo"].sum()
-    sigma_sddp_jul = df_d_jul["SDDP_custo"].sum()
-    diff_jensen_jul = sddp_custo_jul - sigma_sddp_jul
-
-    # ---- HEADER ----
     md = []
-    md.append("# Análise Comparativa — SDDP vs Políticas Fixas de Admissão (Model v8.3)")
+    md.append("# Análise — SDDP vs Políticas Fixas de Admissão (v8.3)")
     md.append("")
-    md.append("**Autor:** Lucas H. — IC USP, Agendamento Rodoviário Porto de Santos")
-    md.append("**Reprodução:**")
+    md.append("**Pipeline:**")
     md.append("```")
-    md.append('julia "model_v8.jl"        # ~2.5 min — gera CSVs em outputs/')
-    md.append('python plot_v8.py          # ~10 s   — gera PNGs em outputs/')
-    md.append('python gerar_analise.py    # ~1 s    — gera este ANALISE.md a partir dos CSVs')
+    md.append('julia model_v8.jl        # exporta CSVs em outputs/')
+    md.append('python plot_v8.py        # gera 15 PNGs')
+    md.append('python gerar_analise.py  # gera este ANALISE.md a partir dos CSVs')
     md.append("```")
     md.append("")
-    md.append("> Todas as métricas, tabelas e anexos abaixo são gerados automaticamente a partir dos CSVs em `outputs/`. Atualizar = re-executar o pipeline.")
+    md.append("Mês: Março (LogNormal, CV=10%) e Julho (Weibull, CV=36%). 30 dias, 1 000 simulações Monte Carlo.")
     md.append("")
     md.append("---")
     md.append("")
 
-    # ---- §1 RESUMO EXECUTIVO ----
-    md.append("## 1. Resumo executivo")
+    # ----------------------------------------------------------
+    # 1. MODELO
+    # ----------------------------------------------------------
+    md.append("## 1. Modelo")
     md.append("")
-    md.append("Comparação da política dinâmica **SDDP** com **5 políticas fixas de admissão** no Ecopátio do Porto de Santos, em **2 safras** (março e julho), com **`w_proc` fixado pela média do SDDP por dia** (determinístico nas fixas). 1000 simulações Monte Carlo × 30 dias.")
+    md.append("### 1.1 Constantes")
     md.append("")
-    md.append("**Definição operacional da política fixa:**")
-    md.append("- `adm_out = X` constante a partir do dia 2 (dia 1 é o estado inicial forçado: `AdmIn=3 000`, `Fila=1 200`).")
-    md.append("- `w_proc[t]` fixado como a média dia a dia das 1000 réplicas SDDP.")
-    md.append("- Processamento livre: `proc = min(w_proc[t], fila.in + adm.in)`.")
+    md.append("| Constante | Valor | Significado |")
+    md.append("|-----------|------:|-------------|")
+    md.append(f"| `CAP_ECOPATIO` | {CAP_ECOPATIO} | Capacidade do pátio (gatilho de spillover) |")
+    md.append(f"| `MAX_VAGAS` | {MAX_VAGAS} | Limite máximo de admissão `admitidos.out ≤ MAX_VAGAS` |")
+    md.append(f"| `C_FILA` | R$ {C_FILA:,} | Custo por caminhão-dia em fila |".replace(",", " "))
+    md.append(f"| `C_SPILLOVER` | R$ {C_SPILLOVER:,} | Custo por caminhão fora do pátio (spillover) |".replace(",", " "))
+    md.append(f"| `C_OCIOSO_TOTAL` | R$ {C_OCIOSO_TOTAL:,} | Custo por unidade ociosa (= 1 753 op. + 42 000 receita perdida) |".replace(",", " "))
+    md.append(f"| `FILA_INICIAL` | {FILA_INICIAL} | Fila no dia 1 |")
+    md.append(f"| `ADMITIDOS_INICIAL` | {ADMITIDOS_INICIAL} | Admissão obrigatória no dia 1 |")
+    md.append(f"| `NUM_DIAS` | {NUM_DIAS} | Horizonte (dias) |")
     md.append("")
-    md.append("**Base `X` (média de `adm_out` do SDDP nos dias 2..30):**")
+
+    md.append("### 1.2 Variáveis")
     md.append("")
-    md.append("| Mês | Base SDDP | X(P_-10) | X(P_-5) | X(P_0) | X(P_+5) | X(P_+10) |")
-    md.append("|-----|----------:|---------:|--------:|-------:|--------:|---------:|")
+    md.append("| Variável | Tipo | Descrição |")
+    md.append("|----------|------|-----------|")
+    md.append("| `fila[t]` | estado, ≥ 0 | Caminhões em fila no início do dia `t` |")
+    md.append(f"| `admitidos[t]` | estado, [0, {MAX_VAGAS}] | Caminhões admitidos para o próximo dia |")
+    md.append("| `processados[t]` | decisão, ≥ 0 | Caminhões processados no dia |")
+    md.append("| `spillover[t]` | decisão, ≥ 0 | Caminhões fora do pátio |")
+    md.append("| `ocioso[t]` | decisão, ≥ 0 | Capacidade não utilizada |")
+    md.append("| `w_proc[t]` | aleatório | Capacidade aleatória de processamento (estocástico) |")
+    md.append("")
+
+    md.append("### 1.3 Restrições (∀ t = 1..30)")
+    md.append("")
+    md.append("```")
+    md.append("processados[t]    ≤ w_proc[t]")
+    md.append("processados[t]    ≤ fila.in[t] + admitidos.in[t]")
+    md.append("fila.out[t]       = fila.in[t] + admitidos.in[t] − processados[t]")
+    md.append(f"spillover[t]      ≥ fila.in[t] + admitidos.in[t] − {CAP_ECOPATIO} − processados[t]")
+    md.append("ocioso[t]         ≥ w_proc[t] − processados[t]")
+    md.append(f"0 ≤ admitidos[t] ≤ {MAX_VAGAS}")
+    md.append("")
+    md.append(f"# Equivalência útil (decorre do balanço): spillover[t] = max(0, fila.out[t] − {CAP_ECOPATIO})")
+    md.append("```")
+    md.append("")
+
+    md.append("### 1.4 Função objetivo (minimização)")
+    md.append("")
+    md.append("```")
+    md.append("min  Σ_{t=1..30}  [")
+    md.append(f"        {C_FILA}     · (fila.in[t] + fila.out[t]) / 2     # custo de fila (regra trapézio)")
+    md.append(f"      + {C_SPILLOVER}   · spillover[t]                       # custo de spillover")
+    md.append(f"      + {C_OCIOSO_TOTAL}   · ocioso[t]                          # custo de ociosidade")
+    md.append("     ]")
+    md.append("```")
+    md.append("")
+    md.append("---")
+    md.append("")
+
+    # ----------------------------------------------------------
+    # 2. POLÍTICAS
+    # ----------------------------------------------------------
+    md.append("## 2. Políticas avaliadas (pseudo-código)")
+    md.append("")
+    md.append("### 2.1 SDDP — política dinâmica (referência)")
+    md.append("")
+    md.append("```")
+    md.append("Treinamento (offline):")
+    md.append("  treinar SDDP com 200 iterações, lower_bound=0, optimizer=HiGHS")
+    md.append("  w_proc parametrizado por discretização de quantis (100 pontos) da dist. ajustada")
+    md.append("")
+    md.append("Execução (online, em cada estágio t):")
+    md.append("  observa (fila.in[t], admitidos.in[t], w_proc[t])")
+    md.append("  decide (processados[t], admitidos.out[t]) minimizando custo")
+    md.append("    esperado dos estágios restantes via cortes de Benders")
+    md.append("```")
+    md.append("")
+    md.append("### 2.2 Políticas fixas P_X (5 níveis em ±10%, ±5%, 0% da base SDDP)")
+    md.append("")
+    md.append("```")
+    md.append("base = mean(admitidos.out do SDDP, dias 2..30 das 1 000 sims)")
+    md.append("X_{P_-10}, X_{P_-5}, X_{P_0}, X_{P_+5}, X_{P_+10}")
+    md.append("    = base × [0.90, 0.95, 1.00, 1.05, 1.10]")
+    md.append("")
+    md.append(f"Estado inicial: fila = {FILA_INICIAL},  admitidos.in = {ADMITIDOS_INICIAL}")
+    md.append("")
+    md.append("Para cada t = 1..30:")
+    md.append("    w_proc[t] = mean(w_proc(SDDP) dia t, das 1 000 sims)  ← determinístico")
+    md.append("    processados[t]  = min(w_proc[t], fila.in + admitidos.in)")
+    md.append(f"    spillover[t]    = max(0, fila.in + admitidos.in − {CAP_ECOPATIO} − processados[t])")
+    md.append("    ocioso[t]       = max(0, w_proc[t] − processados[t])")
+    md.append("    fila.out        = fila.in + admitidos.in − processados[t]")
+    md.append("    admitidos.out   = X    ← REGRA FIXA (constante por toda a simulação)")
+    md.append("    fila.in, admitidos.in = fila.out, admitidos.out")
+    md.append("```")
+    md.append("")
+    md.append("---")
+    md.append("")
+
+    # ----------------------------------------------------------
+    # 3. CENÁRIO DE COMPARAÇÃO
+    # ----------------------------------------------------------
+    md.append("## 3. Cenário de comparação (Anexos A/B)")
+    md.append("")
+    md.append("Todas as 6 políticas rodam no **MESMO cenário médio determinístico**:")
+    md.append("")
+    md.append(f"- `w_proc[t]` fixo = média das 1 000 sims SDDP por dia (mesma série em todas)")
+    md.append(f"- Estado inicial idêntico (Fila={FILA_INICIAL}, AdmIn={ADMITIDOS_INICIAL})")
+    md.append(f"- **SDDP** roda via `SDDP.Historical` com `w_proc[t]` forçado")
+    md.append(f"- **Fixas** rodam Monte Carlo determinístico com `adm_out = X` constante")
+    md.append("")
+    md.append("**Resultado:** `Spill[t] = max(0, FilaFim[t] − 1 200)` bate **exato linha a linha em todas as 6 políticas** (validado: 12/12 OK). Comparação 100% justa.")
+    md.append("")
+    md.append("Para estatísticas agregadas das 1 000 sims estocásticas do SDDP (custo médio com IC, quantis, P(spill>0)), ver §5 (Indicadores).")
+    md.append("")
+    md.append("---")
+    md.append("")
+
+    # ----------------------------------------------------------
+    # 4. DADOS
+    # ----------------------------------------------------------
+    md.append("## 4. Dados e distribuições")
+    md.append("")
+    md.append("| Mês | Média (cam/dia) | sd | CV | Dist | AIC | KS p-value |")
+    md.append("|-----|----------------:|---:|---:|------|----:|-----------:|")
+    md.append("| mar | 2 480.2 | 251.3 | 0.10 | **LogNormal** | 417.5 | 0.55 |")
+    md.append("| jul | 2 102.1 | 754.6 | 0.36 | **Weibull** | 484.8 | 0.93 |")
+    md.append("")
+    md.append("Critério: menor AIC entre os modelos com KS p ≥ 0.05. Ajuste em `outputs/v8_<mes>_fit_*.png`.")
+    md.append("")
+    md.append("**Bases X (média de adm_out SDDP nos dias 2..30):**")
+    md.append("")
+    md.append("| Mês | base | X(P_-10) | X(P_-5) | X(P_0) | X(P_+5) | X(P_+10) |")
+    md.append("|-----|-----:|---------:|--------:|-------:|--------:|---------:|")
     for mes in ["mar", "jul"]:
         b = bases[mes]
         md.append(
-            f"| {mes.upper()} | {b['base']:,.0f} | {b['P_-10']:,.0f} | {b['P_-5']:,.0f} | "
-            f"{b['P_0']:,.0f} | {b['P_+5']:,.0f} | {b['P_+10']:,.0f} |".replace(",", " ")
+            f"| {mes.upper()} | {fmt_n(b['base'])} | {fmt_n(b['P_-10'])} | {fmt_n(b['P_-5'])} | "
+            f"{fmt_n(b['P_0'])} | {fmt_n(b['P_+5'])} | {fmt_n(b['P_+10'])} |"
         )
     md.append("")
-    md.append("**Resultados-chave:**")
-    md.append("")
-    md.append("| | MAR | JUL |")
-    md.append("|---|----:|----:|")
-    md.append(f"| SDDP custo médio | {fmt_brl(sddp_custo_mar)} | {fmt_brl(sddp_custo_jul)} |")
-    melhor_jul = "P_0" if p0_custo_jul == min(sddp_jul["custo_medio"]) else "—"
-    md.append(f"| **Melhor fixa** | **P_0 = {fmt_brl(p0_custo_mar)} ({razao_p0_mar:.2f}× SDDP)** | **P_0 = {fmt_brl(p0_custo_jul)} ({razao_p0_jul:.2f}× SDDP)** {'⚠️' if razao_p0_jul < 1 else ''} |")
-    md.append(f"| Pior fixa | P_+10 = {fmt_brl(p10_custo_mar)} ({razao_p10_mar:.0f}×) | P_+10 = {fmt_brl(p10_custo_jul)} ({razao_p10_jul:.0f}×) |")
-    md.append("")
-
-    # ---- §1.1 CENÁRIO MÉDIO DETERMINÍSTICO ----
-    md.append("### 1.1 Comparação no cenário médio determinístico")
-    md.append("")
-    md.append("**Todas as 6 políticas (SDDP + 5 fixas) são comparadas no MESMO cenário:**")
-    md.append("")
-    md.append(f"- `w_proc[t]` fixo = média das 1000 sims SDDP por dia `t` (mesma série em todas as políticas)")
-    md.append(f"- Estado inicial: `Fila = {FILA_INICIAL}`, `AdmIn = {ADMITIDOS_INICIAL}` (idêntico)")
-    md.append(f"- SDDP roda esse cenário via `SDDP.Historical` (política treinada, w_proc forçado)")
-    md.append(f"- Fixas rodam Monte Carlo determinístico com `adm_out = X` constante")
-    md.append("")
-    md.append(f"**Em cada trajetória individual** (incluindo SDDP no cenário médio), `Spill = max(0, FilaFim − {CAP_ECOPATIO})` bate exato linha a linha — é a restrição nativa do modelo, não recálculo forçado.")
-    md.append("")
-    md.append("**Para as estatísticas agregadas** das 1000 sims estocásticas do SDDP (custo médio, IC 95%, quantis, P(spill>0)), ver Tabelas 5.1, 5.2 e seção 5.4 (Indicadores).")
-    md.append("")
-
-    # ---- §1.2 ACHADO CONTRAINTUITIVO ----
-    if razao_p0_jul < 1:
-        md.append("### 1.2 Achado contraintuitivo em JUL")
-        md.append("")
-        md.append(f"Em JUL, a fixa **P_0 ({fmt_brl(p0_custo_jul)})** é **{razao_p0_jul:.2f}× o SDDP ({fmt_brl(sddp_custo_jul)})** — i.e. {fmt_brl(diff_p0_sddp_jul)} {diff_sinal} o SDDP. Política dinâmica deveria sempre ganhar de política fixa. Por quê isso acontece?")
-        md.append("")
-        md.append("- **SDDP** é simulado em mundo estocástico: a cada dia `w_proc` é amostrado da Weibull (sd=754). O SDDP enfrenta variabilidade real.")
-        md.append("- **Política fixa** usa `w_proc` médio do SDDP (sd=0 no input). Opera no \"mundo médio idealizado\".")
-        md.append("")
-        md.append(f"A diferença SDDP − P_0 = {fmt_brl(diff_p0_sddp_jul)} em jul **é o custo da incerteza realmente enfrentada pelo SDDP**, que a fixa determinística não vê.")
-        md.append("")
-        md.append("**Em MAR** isso não acontece porque `w_proc` tem CV baixo (10%) — variabilidade pequena demais. Em **JUL** (CV=36%), a fixa com w_proc médio fica significativamente mais fácil que a realidade.")
-        md.append("")
-
     md.append("---")
     md.append("")
 
-    # ---- §2 MODELO ----
-    md.append("## 2. Modelo (idêntico ao v7)")
+    # ----------------------------------------------------------
+    # 5. INDICADORES
+    # ----------------------------------------------------------
+    md.append("## 5. Indicadores")
     md.append("")
-    md.append("**Restrições e função objetivo:**")
-    md.append("```")
-    md.append("processados ≤ w_proc")
-    md.append("processados ≤ fila.in + admitidos.in")
-    md.append("fila.out    = fila.in + admitidos.in − processados")
-    md.append(f"spillover   ≥ fila.in + admitidos.in − {CAP_ECOPATIO} − processados")
-    md.append("ocioso      ≥ w_proc − processados")
+    md.append("### 5.1 Glossário")
     md.append("")
-    md.append(f"obj = Σ_t [ {C_FILA}·(fila.in+fila.out)/2 + {C_SPILLOVER}·spillover + {C_OCIOSO_TOTAL}·ocioso ]")
-    md.append("```")
-    md.append("")
-    md.append(f"**Constantes:** `CAP_ECOPATIO={CAP_ECOPATIO}`, `MAX_VAGAS={MAX_VAGAS}`, `FILA_INICIAL={FILA_INICIAL}`, `ADMITIDOS_INICIAL={ADMITIDOS_INICIAL}`, `NUM_DIAS={NUM_DIAS}`.")
-    md.append("")
-    md.append("---")
-    md.append("")
-
-    # ---- §3 DADOS E DIST ----
-    md.append("## 3. Dados e distribuições")
-    md.append("")
-    md.append("| Mês | Média (cam./dia) | sd | CV | Dist escolhida |")
-    md.append("|-----|-----------------:|---:|---:|----------------|")
-    md.append("| **mar** | 2 480.2 | 251.3 | 0.10 | **LogNormal** |")
-    md.append("| **jul** | 2 102.1 | 754.6 | 0.36 | **Weibull** |")
-    md.append("")
-    md.append("Critério: menor AIC entre os modelos com KS p ≥ 0.05. Visualização do fit em [`outputs/v8_<mes>_fit_*.png`](outputs/).")
-    md.append("")
-    md.append("---")
+    md.append("| Indicador | Definição |")
+    md.append("|-----------|-----------|")
+    md.append("| **Custo médio** | Esperança do custo total dos 30 dias (média 1 000 sims) |")
+    md.append("| **IC 95%** | Intervalo de confiança 95% do custo médio (`± 1.96·sd/√N`) |")
+    md.append("| **P5 / P50 / P95** | Quantis 5%, 50% (mediana), 95% da distribuição do custo |")
+    md.append("| **P(spill > 0)** | Probabilidade de haver spillover em algum dia |")
+    md.append("| **Spill cond.** | Spillover total esperado **condicional** a ter ocorrido |")
+    md.append(f"| **Fila pico** | Média do pico de fila ao longo dos 30 dias (limite MAX_VAGAS={MAX_VAGAS}) |")
+    md.append("| **Service level** | Σ proc / Σ admitidos nos dias 2..30, cap em 100% |")
+    md.append("| **entram/proc/ocio/spill/dia** | Médias diárias das 4 quantidades operacionais |")
     md.append("")
 
-    # ---- §4 POLÍTICAS ----
-    md.append("## 4. Políticas avaliadas")
+    md.append("### 5.2 MAR — valores")
     md.append("")
-    md.append("### 4.1 SDDP — referência (estocástico)")
+    md.append(tabela_indicadores(sddp_mar))
     md.append("")
-    md.append("A cada dia `t`, `w_proc[t]` é **amostrado** da distribuição ajustada → 1000 cenários estocásticos. SDDP decide `(processados[t], admitidos.out[t])` em função do estado.")
-    md.append("")
-    md.append("### 4.2 Cinco políticas fixas P_X (determinísticas)")
-    md.append("")
-    md.append("```")
-    md.append(f"estado inicial: fila = {FILA_INICIAL}, adm_in = {ADMITIDOS_INICIAL}")
-    md.append("para t = 1..30:")
-    md.append("    w_proc[t] = mean_{r=1..1000} w_proc_SDDP[r, t]   ← FIXO, NÃO AMOSTRADO")
-    md.append("    processados[t] = min(w_proc[t], fila.in + adm.in)   ← processa o máximo possível")
-    md.append(f"    spillover[t]   = max(0, fila.in + adm.in − {CAP_ECOPATIO} − processados[t])")
-    md.append("    ocioso[t]      = max(0, w_proc[t] − processados[t])")
-    md.append("    fila_out       = fila.in + adm.in − processados[t]")
-    md.append("    adm_out        = X   ← REGRA FIXA DE ADMISSÃO")
-    md.append("```")
-    md.append("")
-    md.append("---")
+    md.append(f"**Melhor fixa MAR:** P_0 = {fmt_brl(cmar('P_0'))} ({cmar('P_0')/cmar('SDDP'):.2f}× SDDP). **Pior:** P_+10 = {fmt_brl(cmar('P_+10'))} ({cmar('P_+10')/cmar('SDDP'):.0f}× SDDP).")
     md.append("")
 
-    # ---- §5 RESULTADOS ----
-    md.append("## 5. Resultados agregados (1000 sims)")
+    md.append("### 5.3 JUL — valores")
     md.append("")
-    md.append("### 5.1 Sumário comparativo — MAR")
+    md.append(tabela_indicadores(sddp_jul))
     md.append("")
-    md.append(gera_tabela_sumario(sddp_mar, bases["mar"]))
-    md.append("")
-    md.append(f"**Razão melhor fixa / SDDP em mar: {razao_p0_mar:.2f}× (P_0).**")
-    md.append("")
-    md.append("### 5.2 Sumário comparativo — JUL")
-    md.append("")
-    md.append(gera_tabela_sumario(sddp_jul, bases["jul"]))
-    md.append("")
-    if razao_p0_jul < 1:
-        md.append(f"**P_0 ({fmt_brl(p0_custo_jul)}) < SDDP ({fmt_brl(sddp_custo_jul)})!** Razão melhor fixa / SDDP em jul: **{razao_p0_jul:.2f}× (P_0 ganha)** — vide diagnóstico em §1.2.")
+    razao_jul = cjul('P_0') / cjul('SDDP')
+    if razao_jul < 1:
+        md.append(f"**Achado contraintuitivo JUL:** P_0 = {fmt_brl(cjul('P_0'))} **vence** o SDDP = {fmt_brl(cjul('SDDP'))} ({razao_jul:.2f}×). Razão: P_0 opera no cenário médio determinístico (w_proc fixo); o SDDP é simulado com w_proc estocástico real (Weibull com sd=754) — paga o custo da variabilidade.")
     else:
-        md.append(f"**Razão melhor fixa / SDDP em jul: {razao_p0_jul:.2f}× (P_0).**")
+        md.append(f"**Melhor fixa JUL:** P_0 = {fmt_brl(cjul('P_0'))} ({razao_jul:.2f}× SDDP).")
     md.append("")
-    md.append("### 5.3 Visualizações")
+    md.append("---")
     md.append("")
-    md.append("**Boxplot custo total (escala log):**")
+
+    # ----------------------------------------------------------
+    # 6. GRÁFICOS
+    # ----------------------------------------------------------
+    md.append("## 6. Gráficos")
+    md.append("")
+    md.append("Cada gráfico abaixo é gerado por `plot_v8.py` a partir dos CSVs. Todos em `outputs/`.")
+    md.append("")
+
+    md.append("### 6.1 Boxplot custo total (1 000 sims, log)")
+    md.append("Mostra distribuição do custo total entre as 1 000 réplicas. Fixas viram linha (determinísticas no cenário médio).")
     md.append("")
     md.append("![boxplot mar](outputs/py_v8_mar_boxplot.png)")
     md.append("")
     md.append("![boxplot jul](outputs/py_v8_jul_boxplot.png)")
     md.append("")
-    md.append("**Service level (% processado da demanda admitida):**")
+
+    md.append("### 6.2 Service level por política")
+    md.append("Fração da demanda admitida que é de fato processada nos dias 2..30 (cap 100%).")
     md.append("")
     md.append("![service mar](outputs/py_v8_mar_service_level.png)")
     md.append("")
     md.append("![service jul](outputs/py_v8_jul_service_level.png)")
     md.append("")
-    md.append("**Composição do custo (fila + spillover + ociosidade):**")
+
+    md.append("### 6.3 Composição do custo")
+    md.append("Decompõe o custo total em fila + spillover + ociosidade (escala log).")
     md.append("")
     md.append("![composicao mar](outputs/py_v8_mar_composicao_custo.png)")
     md.append("")
     md.append("![composicao jul](outputs/py_v8_jul_composicao_custo.png)")
     md.append("")
 
-    # ---- §5.4 INDICADORES ----
-    md.append("### 5.4 Indicadores em detalhe")
-    md.append("")
-    md.append("Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do SDDP** (e da política fixa correspondente, com 1000 réplicas determinísticas idênticas porque a fixa não tem aleatoriedade no w_proc).")
-    md.append("")
-    md.append("**Glossário:**")
-    md.append("")
-    md.append("| Indicador | O que mede |")
-    md.append("|-----------|------------|")
-    md.append("| **Custo médio** | Esperança do custo total dos 30 dias (R$). |")
-    md.append("| **IC 95%** | Intervalo de confiança 95% do custo médio (apenas SDDP tem >0). |")
-    md.append("| **P5 / P50 / P95** | Quantis 5%, 50% (mediana), 95% da distribuição do custo total. |")
-    md.append("| **P(spill > 0)** | Probabilidade de haver spillover em algum dia da simulação. |")
-    md.append("| **Spill cond. médio** | Spillover total esperado **condicionado** a ter ocorrido. |")
-    md.append(f"| **Fila pico médio** | Média do pico de fila ao longo dos 30 dias (limite operacional MAX_VAGAS={MAX_VAGAS}). |")
-    md.append("| **Service level** | `Σ proc / Σ admitidos.in` nos dias 2..30, cap em 100%. % da demanda atendida. |")
-    md.append("| **entram_dia** | Caminhões médios admitidos por dia. |")
-    md.append("| **proc_dia** | Caminhões médios processados por dia. |")
-    md.append("| **ocio_dia** | Capacidade ociosa média por dia. |")
-    md.append("| **spill_dia** | Spillover médio por dia. |")
-    md.append("")
-
-    for (mes, df_s, titulo) in [("mar", sddp_mar, "MAR"), ("jul", sddp_jul, "JUL")]:
-        md.append(f"**{titulo} — todos os indicadores:**")
-        md.append("")
-        md.append("| Indicador | SDDP | P_-10 | P_-5 | P_0 | P_+5 | P_+10 |")
-        md.append("|-----------|-----:|------:|-----:|----:|-----:|------:|")
-        # Custo médio
-        row = lambda key, fn: f"| {key} | " + " | ".join(
-            fn(df_s[df_s["politica"] == pol].iloc[0]) for pol in POL_ORDER
-        ) + " |"
-        md.append(row("Custo médio",        lambda r: fmt_brl(r["custo_medio"])))
-        md.append(row("IC 95%",             lambda r: f"± {r['custo_ic']/1e6:.2f} M"))
-        md.append(row("P5 (custo)",         lambda r: fmt_brl(r["custo_p5"])))
-        md.append(row("P50 (custo)",        lambda r: fmt_brl(r["custo_p50"])))
-        md.append(row("P95 (custo)",        lambda r: fmt_brl(r["custo_p95"])))
-        md.append(row("P(spill > 0)",       lambda r: f"{r['spill_prob']*100:.1f}%"))
-        md.append(row("Spill cond. médio",  lambda r: f"{r['spill_cond_med']:,.0f}".replace(",", " ")))
-        md.append(row("Fila pico médio",    lambda r: f"{r['fila_pico_med']:,.0f}".replace(",", " ")))
-        md.append(row("Service level",      lambda r: f"{r['service_level']*100:.1f}%"))
-        md.append(row("entram/dia",         lambda r: f"{r['entram_dia']:,.0f}".replace(",", " ")))
-        md.append(row("proc/dia",           lambda r: f"{r['proc_dia']:,.0f}".replace(",", " ")))
-        md.append(row("ocio/dia",           lambda r: f"{r['ocio_dia']:,.0f}".replace(",", " ")))
-        md.append(row("spill/dia",          lambda r: f"{r['spill_dia']:,.0f}".replace(",", " ")))
-        md.append("")
-
-    md.append("---")
-    md.append("")
-
-    # ---- §6 EVOLUÇÃO ----
-    md.append("## 6. Evolução dia-a-dia")
-    md.append("")
-    md.append("### 6.1 Painel 4 variáveis")
+    md.append("### 6.4 Painel 4 variáveis (proc / fila / ocio log / spill log)")
+    md.append("Evolução diária de 4 quantidades-chave por política.")
     md.append("")
     md.append("![painel mar](outputs/py_v8_mar_painel.png)")
     md.append("")
     md.append("![painel jul](outputs/py_v8_jul_painel.png)")
     md.append("")
-    md.append("### 6.2 Custo acumulado")
+
+    md.append("### 6.5 Custo acumulado (log)")
+    md.append("Soma cumulativa do custo dia a dia — \"o gráfico do dinheiro\".")
     md.append("")
     md.append("![custo acumulado mar](outputs/py_v8_mar_custo_acumulado.png)")
     md.append("")
     md.append("![custo acumulado jul](outputs/py_v8_jul_custo_acumulado.png)")
     md.append("")
-    md.append("### 6.3 Comparativo mar vs jul")
+
+    md.append("### 6.6 Comparativo mar vs jul (side-by-side)")
     md.append("")
-    md.append("![comparativo mar vs jul](outputs/py_v8_mar_jul_comparativo.png)")
+    md.append("![comparativo](outputs/py_v8_mar_jul_comparativo.png)")
     md.append("")
     md.append("---")
     md.append("")
 
-    # ---- §7 CONCLUSÕES ----
-    md.append("## 7. Conclusões")
-    md.append("")
-    md.append(f"1. **MAR (CV baixo, 10%):** SDDP é melhor que todas as fixas. Mínimo P_0 = {razao_p0_mar:.2f}× SDDP.")
-    if razao_p0_jul < 1:
-        md.append(f"2. **JUL (CV alto, 36%):** a fixa P_0 com w_proc médio fixo é MELHOR que o SDDP em {(1-razao_p0_jul)*100:.0f}%. Reflete que a fixa opera no \"mundo médio\" sem enfrentar a variabilidade real.")
-    else:
-        md.append(f"2. **JUL (CV alto, 36%):** P_0 = {razao_p0_jul:.2f}× SDDP (menor margem que mar — variabilidade Weibull valoriza adaptatividade).")
-    md.append("3. **A vantagem real do SDDP é a adaptatividade ao ruído estocástico.** Comparações justas requerem que tanto SDDP quanto fixas operem no mesmo mundo.")
-    md.append("4. **Service level fica em 100% para X ≤ X(P_0)** em ambos os meses. Apenas X alto (P_+5/P_+10) deixa demanda acumulada.")
-    md.append(f"5. **Fila pico:** todas as políticas com X ≤ X(P_+5) ficam abaixo de MAX_VAGAS={MAX_VAGAS} (operacionalmente viáveis). P_+10 estoura em ambos os meses.")
-    md.append("")
-    md.append("---")
-    md.append("")
-
-    # ---- §8 ARTEFATOS ----
-    md.append("## 8. Artefatos")
-    md.append("")
-    md.append("| Categoria | Arquivos |")
-    md.append("|-----------|----------|")
-    md.append("| Código Julia | [model_v8.jl](model_v8.jl) (~600 linhas, exporta CSVs) |")
-    md.append("| Código Python (gráficos) | [plot_v8.py](plot_v8.py) (15 PNGs publicação) |")
-    md.append("| Código Python (análise) | [gerar_analise.py](gerar_analise.py) (gera este ANALISE.md) |")
-    md.append("| Sumário | [`outputs/v8_<mes>_sumario.csv`](outputs/) |")
-    md.append("| Médias dia-a-dia | [`outputs/v8_<mes>_dia_a_dia.csv`](outputs/) |")
-    md.append("| Réplica representativa | [`outputs/v8_<mes>_replica_repr.csv`](outputs/) |")
-    md.append("| Réplica qualquer (idx=42) | [`outputs/v8_<mes>_replica_qualquer.csv`](outputs/) |")
-    md.append("| Réplicas completas (1000) | [`outputs/v8_<mes>_resultados.csv`](outputs/) |")
-    md.append("")
-    md.append("---")
-    md.append("")
-
-    # ---- ANEXOS ----
-    for ax_letra, mes, titulo in [
-        ("A", "mar", "MAR: cenário médio dia-a-dia (1000 sims SDDP + 5 fixas ±10%, ±5%, 0%)"),
-        ("B", "jul", "JUL: cenário médio dia-a-dia (1000 sims SDDP + 5 fixas ±10%, ±5%, 0%)"),
+    # ----------------------------------------------------------
+    # 7. ANEXOS
+    # ----------------------------------------------------------
+    for ax, mes, titulo in [
+        ("A", "mar", "MAR: cenário médio (6 políticas, 30 dias)"),
+        ("B", "jul", "JUL: cenário médio (6 políticas, 30 dias)"),
     ]:
-        md.append(f"## Anexo {ax_letra} — {titulo}")
+        md.append(f"## Anexo {ax} — {titulo}")
         md.append("")
-        if ax_letra == "A":
-            md.append("> **TODAS as políticas rodam no MESMO cenário médio determinístico:**")
-            md.append(">")
-            md.append("> - `w_proc[t]` fixo = média das 1000 sims SDDP por dia (mesma série em todas)")
-            md.append("> - Estado inicial idêntico (`Fila=1 200`, `AdmIn=3 000`)")
-            md.append(">")
-            md.append("> **SDDP**: trajetória produzida pelo `SDDP.simulate` com `sampling_scheme=SDDP.Historical(w_proc_medio_diario)` — a política treinada respondendo ao cenário médio. Trajetória nativa, sem recálculo.")
-            md.append(">")
-            md.append("> **Fixas (P_-10..P_+10)**: Monte Carlo determinístico com `adm_out = X` constante e `w_proc[t]` = mesma série média.")
-            md.append(">")
-            md.append("> **Spill = max(0, FilaFim − 1 200) bate linha a linha em TODAS as 6 tabelas** — propriedade nativa da restrição do modelo.")
-            md.append(">")
-            md.append("> Para estatísticas agregadas das 1000 sims estocásticas (custo médio com IC, quantis, P(spill>0)), ver §5.4 (Indicadores).")
-            md.append("")
-        else:
-            md.append("Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário médio determinístico, mesma série w_proc para todas as 6 políticas.")
-            md.append("")
-
+        md.append("Todas as 6 políticas no mesmo cenário (w_proc = média 1 000 sims SDDP). Valores nativos do modelo — `Spill = max(0, FilaFim − 1 200)` bate exato.")
+        md.append("")
         for pol in POL_ORDER:
-            tag = "(SDDP no cenário médio determinístico — w_proc fixo via SDDP.Historical)" if pol == "SDDP" else "(cenário médio: w_proc = média SDDP por dia, adm_out = X constante)"
-            md.append(f"#### {mes.upper()} — Política `{pol}` {tag}")
+            tag = "SDDP via `SDDP.Historical`" if pol == "SDDP" else "Monte Carlo determinístico (`adm_out` fixo)"
+            md.append(f"### {mes.upper()} — `{pol}` — {tag}")
             md.append("")
-            md.append(gera_tabela_dia_a_dia(dados[mes], pol))
+            md.append(tabela_dia_a_dia(dados[mes], pol))
             md.append("")
         md.append("---")
         md.append("")
 
-    # Anexos C e D — réplica qualquer
-    for ax_letra, mes, intro in [
-        ("C", "mar", "Trajetória individual do SDDP em MAR (réplica `idx=42` das 1000). **Números coerentes linha a linha**: `Spill = max(0, FilaFim − 1 200)` bate exato."),
-        ("D", "jul", "Trajetória individual do SDDP em JUL. **Números coerentes linha a linha.** Observe a alta variabilidade de `w_proc` ao longo dos dias — característica de julho."),
-    ]:
-        md.append(f"## Anexo {ax_letra} — {mes.upper()}: uma réplica qualquer do SDDP (idx=42)")
+    for ax, mes in [("C", "mar"), ("D", "jul")]:
+        md.append(f"## Anexo {ax} — {mes.upper()}: réplica qualquer SDDP (idx=42)")
         md.append("")
-        md.append(intro)
+        md.append("Uma das 1 000 simulações estocásticas do SDDP (índice arbitrário 42). `w_proc` amostrado da distribuição real do mês — mostra como o SDDP reage a um cenário real.")
         md.append("")
-        md.append(f"#### {mes.upper()} — SDDP, réplica qualquer (idx=42, trajetória individual)")
-        md.append("")
-        md.append(gera_tabela_replica(dados[mes]["rep_qualquer"]))
+        md.append(tabela_replica_qualquer(dados[mes]["rep_qualquer"]))
         md.append("")
         md.append("---")
         md.append("")
 
-    # ---- ANEXO E: Validações ----
-    md.append("## Anexo E — Validações e reprodutibilidade")
+    # Anexo E - Reprodutibilidade
+    md.append("## Anexo E — Reprodutibilidade")
     md.append("")
-    md.append("- **V1 (vs v7):** SDDP mar do v8 compatível com v7 a menos de ±5%.")
-    md.append("- **V2 (formula linha-a-linha):** `Spill = max(0, FilaFim − 1 200)` validado em 12/12 tabelas (6 políticas × 2 meses).")
-    md.append("- **V3 (determinismo das fixas):** rodar `julia model_v8.jl` duas vezes → custos das fixas em `v8_<mes>_resultados.csv` são bit-idênticos. SDDP varia ~1-2% por amostragem interna.")
-    md.append("- **V4 (consistência tabela × sumário):** para fixas, `Σ Custo da tabela = custo médio do sumário` (diff ~0%). Para SDDP, há diferença em JUL por causa de Jensen (§1.1).")
-    md.append("")
-    md.append("**Sistema:** Windows 11, Julia 1.12.4, Python 3.11.9.")
-    md.append("")
-    md.append("**Como rodar do zero:**")
+    md.append("```bash")
+    md.append('julia "Model SDDP - 19-05-26/model_v8.jl"       # ~2.5 min')
+    md.append('python "Model SDDP - 19-05-26/plot_v8.py"       # ~10 s')
+    md.append('python "Model SDDP - 19-05-26/gerar_analise.py" # ~1 s')
     md.append("```")
-    md.append('cd "Projeto - IC - Rodoviário"')
-    md.append('julia "Model SDDP - 19-05-26/model_v8.jl"     # ~2.5 min — gera CSVs')
-    md.append('python "Model SDDP - 19-05-26/plot_v8.py"     # ~10 s   — gera PNGs')
-    md.append('python "Model SDDP - 19-05-26/gerar_analise.py"  # ~1 s — gera ANALISE.md')
-    md.append("```")
+    md.append("")
+    md.append("**Sistema:** Windows 11, Julia 1.12.4, Python 3.11.9. SDDP.jl + HiGHS, pandas + matplotlib + seaborn.")
+    md.append("")
+    md.append("**Validações automáticas:**")
+    md.append("- V1: `Spill = max(0, FilaFim − 1 200)` em 12/12 tabelas dos anexos A/B (diff < 1e-10)")
+    md.append("- V2: Σ Custo tabela == custo médio sumário (para fixas, diff ~0%)")
+    md.append("- V3: réplicas individuais batem fórmula exata (diff = 0)")
     md.append("")
 
     return "\n".join(md)
@@ -595,15 +505,13 @@ def gerar_md(dados, bases) -> str:
 def main():
     print("Lendo CSVs...")
     dados = carregar_dados()
-    print("Calculando bases X (média adm_out SDDP dias 2..30)...")
     bases = calcular_bases(dados)
     for mes in ["mar", "jul"]:
         print(f"  {mes.upper()}: base = {bases[mes]['base']:.1f}")
     print("Gerando ANALISE.md...")
     md = gerar_md(dados, bases)
-    out_path = ROOT / "ANALISE.md"
-    out_path.write_text(md, encoding="utf-8")
-    print(f"OK — {out_path} ({len(md)} chars, {md.count(chr(10))+1} linhas)")
+    (ROOT / "ANALISE.md").write_text(md, encoding="utf-8")
+    print(f"OK — ANALISE.md ({len(md)} chars, {md.count(chr(10))+1} linhas)")
 
 
 if __name__ == "__main__":
