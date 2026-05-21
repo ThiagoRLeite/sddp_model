@@ -27,7 +27,10 @@ plt.rcParams.update({
 })
 
 ROOT = Path(__file__).parent
-OUT = ROOT / "outputs"
+OUT  = ROOT / "outputs"
+CSVS = OUT / "csvs"            # input: CSVs gerados pelo Julia
+PLOTS = OUT / "graficos"       # output: PNGs publicacao-ready
+PLOTS.mkdir(parents=True, exist_ok=True)
 MESES = ["mar", "jul"]
 POL_ORDER = ["SDDP", "P_-10", "P_-5", "P_0", "P_+5", "P_+10"]
 
@@ -76,7 +79,7 @@ def _add_pol_lines(ax, df, var_suffix, ylabel, logy=False):
 # 1) Custo acumulado (line plot, escala log) — money plot
 # ---------------------------------------------------------------------------
 def plot_custo_acumulado(mes: str):
-    df = pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv")
+    df = pd.read_csv(CSVS / f"v8_{mes}_dia_a_dia.csv")
     fig, ax = plt.subplots(figsize=(12, 6.5))
 
     # 6 linhas — cenario medio deterministico, bate exato com Anexos A/B
@@ -107,7 +110,7 @@ def plot_custo_acumulado(mes: str):
             transform=ax.transAxes, va="bottom", ha="left",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="white", edgecolor="gray", alpha=0.95),
             fontsize=10)
-    fig.savefig(OUT / f"py_v8_{mes}_custo_acumulado.png")
+    fig.savefig(PLOTS / f"py_v8_{mes}_custo_acumulado.png")
     plt.close(fig)
 
 
@@ -115,7 +118,7 @@ def plot_custo_acumulado(mes: str):
 # 2) Fila ao fim do dia (linear)
 # ---------------------------------------------------------------------------
 def plot_fila(mes: str):
-    df = pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv")
+    df = pd.read_csv(CSVS / f"v8_{mes}_dia_a_dia.csv")
     fig, ax = plt.subplots(figsize=(11, 6))
     _add_pol_lines(ax, df, "fila_out", "Fila ao fim do dia (caminhões)")
     ax.set_title(f"Evolução da fila — {mes.upper()} (média 1000 sims)")
@@ -124,7 +127,7 @@ def plot_fila(mes: str):
     ax.axhline(2000, color="darkorange", linestyle=":", linewidth=1, alpha=0.6,
                label="Threshold conforto = 2 000")
     ax.legend(loc="upper left", ncol=2, fontsize=9)
-    fig.savefig(OUT / f"py_v8_{mes}_fila.png")
+    fig.savefig(PLOTS / f"py_v8_{mes}_fila.png")
     plt.close(fig)
 
 
@@ -132,7 +135,7 @@ def plot_fila(mes: str):
 # 3) Spillover por dia (log) — bem separado de fila por causa da magnitude
 # ---------------------------------------------------------------------------
 def plot_spillover(mes: str):
-    df = pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv")
+    df = pd.read_csv(CSVS / f"v8_{mes}_dia_a_dia.csv")
     fig, ax = plt.subplots(figsize=(11, 6))
     for pol in POL_ORDER:
         y = df[f"{pol}_spill"].clip(lower=1e-2)  # piso para log
@@ -144,7 +147,7 @@ def plot_spillover(mes: str):
     ax.set_title(f"Spillover dia a dia — {mes.upper()} (média 1000 sims)")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(loc="lower right", ncol=2, fontsize=9)
-    fig.savefig(OUT / f"py_v8_{mes}_spillover.png")
+    fig.savefig(PLOTS / f"py_v8_{mes}_spillover.png")
     plt.close(fig)
 
 
@@ -152,7 +155,7 @@ def plot_spillover(mes: str):
 # 4) Boxplot do custo total (escala log) — distribuição completa N=1000
 # ---------------------------------------------------------------------------
 def plot_boxplot_custo(mes: str):
-    df = pd.read_csv(OUT / f"v8_{mes}_resultados.csv")
+    df = pd.read_csv(CSVS / f"v8_{mes}_resultados.csv")
     df["politica"] = pd.Categorical(df["politica"], categories=POL_ORDER, ordered=True)
     fig, ax = plt.subplots(figsize=(11, 6))
     # Usa matplotlib direto (seaborn 0.13 tem bug com hue+legend=False)
@@ -172,7 +175,7 @@ def plot_boxplot_custo(mes: str):
     ax.set_ylabel("Custo total (R$, escala log)")
     ax.set_title(f"Distribuição do custo total nas 1000 sims — {mes.upper()}")
     ax.grid(True, axis="y", alpha=0.35)
-    fig.savefig(OUT / f"py_v8_{mes}_boxplot.png")
+    fig.savefig(PLOTS / f"py_v8_{mes}_boxplot.png")
     plt.close(fig)
 
 
@@ -180,7 +183,7 @@ def plot_boxplot_custo(mes: str):
 # 5) Service level (% processado da demanda admitida) — bar chart com anotação
 # ---------------------------------------------------------------------------
 def plot_service_level(mes: str):
-    df = pd.read_csv(OUT / f"v8_{mes}_sumario.csv")
+    df = pd.read_csv(CSVS / f"v8_{mes}_sumario.csv")
     df["politica"] = pd.Categorical(df["politica"], categories=POL_ORDER, ordered=True)
     df = df.sort_values("politica")
     fig, ax = plt.subplots(figsize=(10, 5.5))
@@ -199,7 +202,7 @@ def plot_service_level(mes: str):
                 f"{val:.1f}%", ha="center", va="bottom", fontsize=10, fontweight="bold")
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(True, axis="y", alpha=0.3)
-    fig.savefig(OUT / f"py_v8_{mes}_service_level.png")
+    fig.savefig(PLOTS / f"py_v8_{mes}_service_level.png")
     plt.close(fig)
 
 
@@ -207,7 +210,7 @@ def plot_service_level(mes: str):
 # 6) Painel 2x2 — visão geral do mês (proc/ocioso/spill/fila)
 # ---------------------------------------------------------------------------
 def plot_painel(mes: str):
-    df = pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv")
+    df = pd.read_csv(CSVS / f"v8_{mes}_dia_a_dia.csv")
     fig, axes = plt.subplots(2, 2, figsize=(15, 9))
     cfg = [
         ("proc",     "Processados / dia",          False, axes[0, 0]),
@@ -235,7 +238,7 @@ def plot_painel(mes: str):
     fig.suptitle(f"Painel de evolução dia a dia — {mes.upper()} (média 1000 sims)",
                  fontsize=15, fontweight="bold", y=1.0)
     fig.tight_layout()
-    fig.savefig(OUT / f"py_v8_{mes}_painel.png")
+    fig.savefig(PLOTS / f"py_v8_{mes}_painel.png")
     plt.close(fig)
 
 
@@ -248,7 +251,7 @@ C_OCIOSO_TOTAL = 1753.0 + 42000.0
 
 
 def plot_composicao_custo(mes: str):
-    df = pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv")
+    df = pd.read_csv(CSVS / f"v8_{mes}_dia_a_dia.csv")
     # custo agregado por componente, por politica, ao longo de 30 dias
     rows = []
     for pol in POL_ORDER:
@@ -270,7 +273,7 @@ def plot_composicao_custo(mes: str):
     plt.setp(ax.get_xticklabels(), rotation=0)
     ax.legend(title="Componente", loc="best")
     ax.grid(True, axis="y", alpha=0.3, which="both")
-    fig.savefig(OUT / f"py_v8_{mes}_composicao_custo.png")
+    fig.savefig(PLOTS / f"py_v8_{mes}_composicao_custo.png")
     plt.close(fig)
 
 
@@ -280,7 +283,7 @@ def plot_composicao_custo(mes: str):
 def plot_mar_jul_side_by_side():
     fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
     for ax, mes in zip(axes, MESES):
-        df = pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv")
+        df = pd.read_csv(CSVS / f"v8_{mes}_dia_a_dia.csv")
         for pol in POL_ORDER:
             ax.plot(df["dia"], df[f"{pol}_custo_acum"],
                     color=PALETTE[pol], linewidth=LINEWIDTH[pol],
@@ -297,7 +300,7 @@ def plot_mar_jul_side_by_side():
     fig.suptitle("Custo acumulado — comparação MAR vs JUL",
                  fontsize=15, fontweight="bold", y=1.02)
     fig.tight_layout()
-    fig.savefig(OUT / "py_v8_mar_jul_comparativo.png")
+    fig.savefig(PLOTS / "py_v8_mar_jul_comparativo.png")
     plt.close(fig)
 
 
@@ -317,8 +320,8 @@ def main():
         plot_composicao_custo(mes)
     plot_mar_jul_side_by_side()
     print("Pronto.")
-    pngs = sorted(OUT.glob("py_v8_*.png"))
-    print(f"\n{len(pngs)} PNGs gerados em {OUT}:")
+    pngs = sorted(PLOTS.glob("py_v8_*.png"))
+    print(f"\n{len(pngs)} PNGs gerados em {PLOTS}:")
     for p in pngs:
         print(f"  {p.name}")
 

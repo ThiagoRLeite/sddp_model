@@ -6,14 +6,12 @@ Pkg.add([
     "HypothesisTests",
     "SDDP",
     "HiGHS",
-    "StatsPlots",
     "StatsBase",
 ])
 
 using CSV, DataFrames, Statistics, Printf, Random
 using Distributions, HypothesisTests
 using SDDP, HiGHS, JuMP
-using StatsPlots
 using StatsBase: sample, Weights
 
 # ============================================================
@@ -46,15 +44,20 @@ const N_CENARIOS_DISC = 100
 const SERVICE_LEVEL_FILA_THRESHOLD = 2000
 const SEED_BASE = 42
 
-# Paths
+# Paths (v8.5: outputs reorganizados em csvs/, graficos/, terminal/)
 const ROOT = @__DIR__
 const CSV_PATH = joinpath(ROOT, "..", "03-03-2026 - model_v1", "Processamento Santos", "processados_2025.csv")
-const OUTPUT_DIR = joinpath(ROOT, "outputs")
-isdir(OUTPUT_DIR) || mkpath(OUTPUT_DIR)
+const OUTPUT_DIR  = joinpath(ROOT, "outputs")
+const CSVS_DIR    = joinpath(OUTPUT_DIR, "csvs")
+const PLOTS_DIR   = joinpath(OUTPUT_DIR, "graficos")    # apenas PNGs do Python publicacao-ready
+const TERMINAL_DIR = joinpath(OUTPUT_DIR, "terminal")
+for d in (OUTPUT_DIR, CSVS_DIR, PLOTS_DIR, TERMINAL_DIR)
+    isdir(d) || mkpath(d)
+end
 
 @printf("-- model v8 iniciando --\n")
 @printf("  CSV_PATH = %s\n", CSV_PATH)
-@printf("  OUTPUT_DIR = %s\n", OUTPUT_DIR)
+@printf("  CSVS_DIR = %s\n", CSVS_DIR)
 @printf("  C_OCIOSO_TOTAL = R\$ %.1f\n", C_OCIOSO_TOTAL)
 @printf("  N_SIM = %d | MESES = %s\n\n", N_SIM, MESES)
 
@@ -112,41 +115,8 @@ function fit_distribuicoes(data::Vector{Float64})
     return (escolhida = escolhida, ranking = results)
 end
 
-"""
-    plot_fit(mes::String, data::Vector{Float64}, ranking)
-
-Salva 2 PNGs em OUTPUT_DIR:
-- v8_<mes>_fit_histograma.png (histograma + 4 PDFs)
-- v8_<mes>_fit_ecdf.png       (ECDF + 4 CDFs)
-"""
-function plot_fit(mes::String, data::Vector{Float64}, ranking)
-    default(legend = :topright, size = (1000, 600))
-    out_hist = joinpath(OUTPUT_DIR, "v8_$(mes)_fit_histograma.png")
-    out_ecdf = joinpath(OUTPUT_DIR, "v8_$(mes)_fit_ecdf.png")
-
-    p1 = histogram(data;
-        bins = 10, normalize = :pdf, alpha = 0.35,
-        label = "Dados $(uppercase(mes)) (30d)",
-        title = "$(uppercase(mes)) — Histograma e PDFs ajustadas",
-        xlabel = "Processados/dia", ylabel = "Densidade")
-    xgrid = range(max(1.0, minimum(data) * 0.8), maximum(data) * 1.2, length = 400)
-    for r in ranking
-        plot!(p1, xgrid, pdf.(Ref(r.dist), xgrid), lw = 2, label = r.name)
-    end
-    savefig(p1, out_hist)
-
-    p2 = plot(title = "$(uppercase(mes)) — ECDF vs CDFs",
-              xlabel = "Processados/dia", ylabel = "Prob. acumulada")
-    x_sorted = sort(data)
-    y_ecdf = (1:length(x_sorted)) ./ length(x_sorted)
-    scatter!(p2, x_sorted, y_ecdf, ms = 4, alpha = 0.8, label = "ECDF")
-    for r in ranking
-        plot!(p2, xgrid, cdf.(Ref(r.dist), xgrid), lw = 2, label = r.name)
-    end
-    savefig(p2, out_ecdf)
-
-    @printf("  PNGs salvos: %s, %s\n", basename(out_hist), basename(out_ecdf))
-end
+# (v8.5) plot_fit removido — graficos de fit eram redundantes com o ranking AIC/KS
+# impresso no terminal e nao eram usados em ANALISE.md.
 
 """
     discretizar_por_bins(dist::Distribution; n_cenarios=100, q_low=0.01, q_high=0.99)
@@ -341,146 +311,105 @@ const POL_ORDER = ["SDDP", "P_-10", "P_-5", "P_0", "P_+5", "P_+10"]
 const PCT_OFFSETS = [-0.10, -0.05, 0.00, +0.05, +0.10]   # base = media de adm_out(SDDP) excluindo dia 1
 
 """
-    gerar_tabelas_terminal(mes::String, sims_4pol::Dict, ind_4pol::Dict)
+    gerar_tabelas_terminal(mes, sims_4pol, ind_4pol, sim_sddp_cen_medio)
 
-Imprime 3 tabelas no terminal: A (sumario), B (dia-a-dia), C (replica representativa).
-Espera dicts com chaves POL_ORDER.
+Imprime no terminal:
+  TABELA A — Sumario comparativo (1000 sims)
+  TABELA B — ANEXO cenario medio deterministico (mesmas tabelas dos Anexos A/B do ANALISE.md)
+  TABELA C — Replica representativa estocastica (SDDP 1000 sims)
 """
-function gerar_tabelas_terminal(mes::String, sims_4pol::Dict, ind_4pol::Dict)
-    sep = "=" ^ 110
-    println("\n", sep)
-    println("  TABELA A — SUMARIO COMPARATIVO ($(uppercase(mes)), N=$(N_SIM))")
-    println(sep)
-    @printf("  %-6s | %12s | %10s | %12s | %12s | %12s | %8s | %10s | %10s | %8s\n",
+function gerar_tabelas_terminal(mes::String, sims_4pol::Dict, ind_4pol::Dict, sim_sddp_cen_medio)
+    sep_thick = "=" ^ 120
+    sep_thin  = "-" ^ 120
+
+    # ============ TABELA A ============
+    println("\n", sep_thick)
+    println("  TABELA A — SUMARIO COMPARATIVO ($(uppercase(mes)), N=$(N_SIM) sims) ")
+    println(sep_thick)
+    @printf("  %-6s | %14s | %10s | %14s | %14s | %14s | %8s | %10s | %10s | %8s\n",
         "Pol", "CustoMed", "IC95±", "P5", "P50", "P95", "Spill%>0", "SpillCond", "FilaPico", "ServLvl")
-    println("  ", "-"^110)
+    println("  ", sep_thin)
     for pol in POL_ORDER
         i = ind_4pol[pol]
-        @printf("  %-6s | %12.1f | %10.1f | %12.1f | %12.1f | %12.1f | %7.2f%% | %10.1f | %10.1f | %7.2f%%\n",
+        @printf("  %-6s | %14.1f | %10.1f | %14.1f | %14.1f | %14.1f | %7.2f%% | %10.1f | %10.1f | %7.2f%%\n",
             pol, i.custo_medio, i.custo_ic, i.custo_p5, i.custo_p50, i.custo_p95,
             100*i.spill_prob, i.spill_cond_med, i.fila_pico_med, 100*i.service_level)
     end
 
-    println("\n", sep)
-    println("  TABELA B — OPERACAO DIA A DIA (media das $N_SIM sims) — $(uppercase(mes))")
-    println(sep)
-    for pol in POL_ORDER
-        sims = sims_4pol[pol]
-        println("\n  [$pol]")
-        @printf("  %3s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n",
-            "Dia", "FilaIni", "AdmitIn", "Proc", "FilaFim", "Spill", "Ocioso", "AdmitOut")
-        println("  ", "-"^80)
+    # ============ TABELA B — ANEXO cenario medio ============
+    # Helper: imprime 30 dias + linha Σ. Para SDDP, usa sim_sddp_cen_medio (SDDP.Historical).
+    # Para as fixas, usa sims_4pol[pol][1] (primeira replica — todas identicas, deterministicas).
+    function _imprime_tabela_anexo(pol, sim)
+        println("\n  [$pol]  Σ Custo = R\$ $(round(sum(sim[t][:stage_objective] for t in 1:NUM_DIAS) / 1e6, digits=2))M")
+        @printf("  %3s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %10s\n",
+            "Dia", "FilaIni", "AdmIn", "w_proc", "Proc", "FilaFim", "Spill", "Ocioso", "AdmOut", "Custo(R\$)")
+        println("  ", "-"^110)
+        soma = Dict(:proc=>0.0, :spill=>0.0, :ocioso=>0.0, :custo=>0.0)
         for t in 1:NUM_DIAS
-            m_fila_in = mean(sim[t][:fila].in for sim in sims)
-            m_adm_in  = mean(sim[t][:admitidos].in for sim in sims)
-            m_proc    = mean(sim[t][:processados] for sim in sims)
-            m_fila_out= mean(sim[t][:fila].out for sim in sims)
-            m_spill   = mean(sim[t][:spillover] for sim in sims)
-            m_ocio    = mean(sim[t][:ocioso] for sim in sims)
-            m_adm_out = mean(sim[t][:admitidos].out for sim in sims)
-            @printf("  %3d | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f\n",
-                t, m_fila_in, m_adm_in, m_proc, m_fila_out, m_spill, m_ocio, m_adm_out)
+            s = sim[t]
+            @printf("  %3d | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %10.0f\n",
+                t, s[:fila].in, s[:admitidos].in, s[:w_proc], s[:processados],
+                s[:fila].out, s[:spillover], s[:ocioso], s[:admitidos].out, s[:stage_objective])
+            soma[:proc]   += s[:processados]
+            soma[:spill]  += s[:spillover]
+            soma[:ocioso] += s[:ocioso]
+            soma[:custo]  += s[:stage_objective]
         end
+        println("  ", "-"^110)
+        @printf("  %3s | %8s | %8s | %8s | %8.0f | %8s | %8.1f | %8.1f | %8s | %10.0f   (= R\$ %.2fM)\n",
+            "Σ", "—", "—", "—", soma[:proc], "—", soma[:spill], soma[:ocioso], "—",
+            soma[:custo], soma[:custo]/1e6)
     end
 
-    println("\n", sep)
-    println("  TABELA C — REPLICA REPRESENTATIVA (mais proxima da media) — $(uppercase(mes))")
-    println(sep)
-    for pol in POL_ORDER
-        sims = sims_4pol[pol]
-        i    = ind_4pol[pol]
-        idx_repr = argmin(abs.(i.custos .- i.custo_medio))
-        sim_repr = sims[idx_repr]
-        println("\n  [$pol]  replica idx=$idx_repr  custo=R\$ $(round(i.custos[idx_repr], digits=1))")
-        @printf("  %3s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n",
-            "Dia", "FilaIni", "AdmitIn", "ProcCap", "Proc", "FilaFim", "Spill", "Ocioso", "AdmitOut")
-        println("  ", "-"^90)
-        for t in 1:NUM_DIAS
-            s = sim_repr[t]
-            @printf("  %3d | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f\n",
-                t, s[:fila].in, s[:admitidos].in, s[:w_proc],
-                s[:processados], s[:fila].out, s[:spillover], s[:ocioso], s[:admitidos].out)
-        end
+    println("\n", sep_thick)
+    println("  TABELA B — ANEXO cenario medio deterministico ($(uppercase(mes)), 1 trajetoria, 30 dias)")
+    println("           SDDP via SDDP.Historical, fixas com adm_out fixo. Comparacao 100% justa.")
+    println("           Σ Custo bate EXATO com o grafico de custo acumulado dia 30.")
+    println(sep_thick)
+    _imprime_tabela_anexo("SDDP", sim_sddp_cen_medio)
+    for pol in ["P_-10", "P_-5", "P_0", "P_+5", "P_+10"]
+        _imprime_tabela_anexo(pol, sims_4pol[pol][1])  # 1a replica = todas identicas (det.)
     end
+
+    # ============ TABELA C — replica representativa estocastica ============
+    println("\n", sep_thick)
+    println("  TABELA C — REPLICA REPRESENTATIVA ESTOCASTICA ($(uppercase(mes)), SDDP nas 1000 sims)")
+    println("           (apenas SDDP — fixas sao deterministicas, ja mostradas na Tabela B)")
+    println(sep_thick)
+    i = ind_4pol["SDDP"]
+    idx_repr = argmin(abs.(i.custos .- i.custo_medio))
+    sim_repr = sims_4pol["SDDP"][idx_repr]
+    println("\n  [SDDP estocastico]  replica idx=$idx_repr  custo=R\$ $(round(i.custos[idx_repr]/1e6, digits=2))M  (proximo da media R\$ $(round(i.custo_medio/1e6, digits=2))M)")
+    @printf("  %3s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %10s\n",
+        "Dia", "FilaIni", "AdmIn", "w_proc", "Proc", "FilaFim", "Spill", "Ocioso", "AdmOut", "Custo(R\$)")
+    println("  ", "-"^110)
+    soma_c = 0.0
+    for t in 1:NUM_DIAS
+        s = sim_repr[t]
+        @printf("  %3d | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %8.1f | %10.0f\n",
+            t, s[:fila].in, s[:admitidos].in, s[:w_proc], s[:processados],
+            s[:fila].out, s[:spillover], s[:ocioso], s[:admitidos].out, s[:stage_objective])
+        soma_c += s[:stage_objective]
+    end
+    println("  ", "-"^110)
+    @printf("  %3s | Σ Custo = R\$ %.0f   (= R\$ %.2fM)\n", "Σ", soma_c, soma_c/1e6)
     println()
 end
 
-"""
-    gerar_pngs(mes::String, ind_4pol::Dict)
-
-Gera 3 PNGs em OUTPUT_DIR: boxplot do custo, ECDF do custo, barras de indicadores.
-"""
-function gerar_pngs(mes::String, ind_4pol::Dict)
-    default(legend = :topright, size = (1000, 600))
-
-    # 1) Boxplot custo total (escala log) — usar posicoes numericas + xticks
-    #    para preservar a ordem do POL_ORDER (boxplot por string ordena alfa).
-    pos_flat = reduce(vcat,
-        [fill(i, length(ind_4pol[pol].custos)) for (i, pol) in enumerate(POL_ORDER)])
-    custos_flat = reduce(vcat, [ind_4pol[pol].custos for pol in POL_ORDER])
-    p_box = boxplot(
-        pos_flat, custos_flat;
-        legend = false,
-        title = "$(uppercase(mes)) — Custo total das $N_SIM simulacoes (escala log)",
-        ylabel = "Custo total (R\$, log10)",
-        yscale = :log10,
-        xticks = (1:length(POL_ORDER), POL_ORDER),
-    )
-    out_box = joinpath(OUTPUT_DIR, "v8_$(mes)_custo_boxplot.png")
-    savefig(p_box, out_box)
-
-    # 2) ECDFs sobrepostas do custo total
-    p_ecdf = plot(
-        title = "$(uppercase(mes)) — ECDF do custo total ($N_SIM sims)",
-        xlabel = "Custo total (R\$)", ylabel = "Prob. acumulada",
-    )
-    for pol in POL_ORDER
-        c = sort(ind_4pol[pol].custos)
-        y = (1:length(c)) ./ length(c)
-        plot!(p_ecdf, c, y, lw = 2, label = pol)
-    end
-    out_ecdf = joinpath(OUTPUT_DIR, "v8_$(mes)_custo_ecdf.png")
-    savefig(p_ecdf, out_ecdf)
-
-    # 3) Barras agrupadas de indicadores (FilaPico/MAX_VAGAS pode passar de 1.0
-    #     nas politicas fixas — indica violacao do limite de patio MAX_VAGAS)
-    metrics = ["Spill%>0", "FilaPico/MAX_VAGAS", "ServLvl"]
-    vals = zeros(length(metrics), length(POL_ORDER))
-    for (j, pol) in enumerate(POL_ORDER)
-        i = ind_4pol[pol]
-        vals[:, j] = [i.spill_prob, i.fila_pico_med / MAX_VAGAS, i.service_level]
-    end
-    p_bar = groupedbar(
-        metrics, vals;
-        bar_position = :dodge,
-        title = "$(uppercase(mes)) — Indicadores normalizados (FilaPico>1 = estourou patio)",
-        ylabel = "Valor (0..1, exceto FilaPico se >1)",
-        label = reshape(POL_ORDER, 1, :),
-    )
-    out_bar = joinpath(OUTPUT_DIR, "v8_$(mes)_indicadores_bar.png")
-    savefig(p_bar, out_bar)
-
-    @printf("  PNGs salvos: %s, %s, %s\n",
-        basename(out_box), basename(out_ecdf), basename(out_bar))
-end
+# (v8.5) gerar_pngs (boxplot/ECDF/barras Julia) removido — plot_v8.py gera versoes
+# publicacao-ready (matplotlib+seaborn) em outputs/graficos/.
 
 """
-    gerar_pngs_evolucao(mes::String, sims_4pol::Dict, sim_sddp_cen_medio::Vector)
+    construir_series(sims_4pol::Dict, sim_sddp_cen_medio) -> Dict
 
-Gera 6 PNGs de evolucao dia-a-dia (1 linha por politica):
-- v8_<mes>_proc_dia.png       — processados/dia (linear)
-- v8_<mes>_ocioso_dia.png     — ocioso/dia (log)
-- v8_<mes>_spillover_dia.png  — spillover/dia (log)
-- v8_<mes>_fila_dia.png       — fila.out/dia (linear)
-- v8_<mes>_custo_dia.png      — stage_objective/dia (log)
-- v8_<mes>_custo_acumulado.png— soma cumulativa do custo (log)
+Constroi o dicionario series usado no CSV dia-a-dia.
 
-CONSISTENCIA com Anexos (v8.4): SDDP usa a TRAJETORIA do cenario medio deterministico
-(via SDDP.Historical) — mesma do anexo. Fixas seguem deterministicas (1000 sims identicas).
-Banda estocastica do SDDP (P5/P95 + media 1000 sims) eh exportada como SDDP_estoc_* no CSV.
+CONSISTENCIA com Anexos: SDDP usa a TRAJETORIA do cenario medio deterministico
+(via SDDP.Historical) — bate exato com os Anexos A/B do ANALISE.md.
+Fixas seguem deterministicas (1000 sims identicas, primeira replica = todas).
+Banda estocastica do SDDP (P5/P95 + media 1000 sims) eh exportada como SDDP_estoc_*.
 """
-function gerar_pngs_evolucao(mes::String, sims_4pol::Dict, sim_sddp_cen_medio)
-    default(legend = :outerright, size = (1100, 600))
+function construir_series(sims_4pol::Dict, sim_sddp_cen_medio)
     dias = collect(1:NUM_DIAS)
 
     function _medias_dia(sims, key, in_or_out=nothing)
@@ -547,28 +476,6 @@ function gerar_pngs_evolucao(mes::String, sims_4pol::Dict, sim_sddp_cen_medio)
         :custo_acum_p95  => [quantile(cum_matrix[t, :], 0.95) for t in dias],
     )
 
-    plotar = function(var::Symbol, ylab, fname, logy::Bool)
-        p = plot(title = "$(uppercase(mes)) — $ylab (cenario medio deterministico)",
-                 xlabel = "Dia", ylabel = ylab,
-                 yscale = logy ? :log10 : :identity)
-        for pol in POL_ORDER
-            y = series[pol][var]
-            # para escala log, evita zero
-            ylog = logy ? max.(y, 1e-3) : y
-            plot!(p, dias, ylog, lw = pol == "SDDP" ? 3 : 2,
-                  label = pol, marker = pol == "SDDP" ? :circle : :none, ms = 3)
-        end
-        savefig(p, joinpath(OUTPUT_DIR, "v8_$(mes)_$(fname).png"))
-    end
-
-    plotar(:proc,       "Processados / dia",          "proc_dia",        false)
-    plotar(:ocioso,     "Ocioso / dia",               "ocioso_dia",      true)
-    plotar(:spill,      "Spillover / dia",            "spillover_dia",   true)
-    plotar(:fila_out,   "Fila ao fim do dia",         "fila_dia",        false)
-    plotar(:custo,      "Custo / dia (R\$)",          "custo_dia",       true)
-    plotar(:custo_acum, "Custo acumulado (R\$)",      "custo_acumulado", true)
-
-    @printf("  PNGs evolucao salvos: v8_%s_{proc_dia,ocioso_dia,spillover_dia,fila_dia,custo_dia,custo_acumulado}.png\n", mes)
     return series
 end
 
@@ -612,7 +519,7 @@ function gerar_csv_dia_a_dia(mes::String, series::Dict)
         df[!, :SDDP_estoc_custo_acum_p5]   = series["SDDP_estoc"][:custo_acum_p5]
         df[!, :SDDP_estoc_custo_acum_p95]  = series["SDDP_estoc"][:custo_acum_p95]
     end
-    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_dia_a_dia.csv"), df)
+    CSV.write(joinpath(CSVS_DIR, "v8_$(mes)_dia_a_dia.csv"), df)
     @printf("  CSV dia-a-dia salvo: v8_%s_dia_a_dia.csv (SDDP=cenario medio + banda P5/P95 estoc)\n", mes)
 end
 
@@ -636,14 +543,14 @@ function gerar_csv_replica_qualquer(mes::String, sims_sddp, idx_repl::Int)
         adm_out    = [sim[t][:admitidos].out for t in 1:NUM_DIAS],
         custo      = [sim[t][:stage_objective] for t in 1:NUM_DIAS],
     )
-    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_replica_qualquer.csv"), df)
+    CSV.write(joinpath(CSVS_DIR, "v8_$(mes)_replica_qualquer.csv"), df)
     @printf("  CSV replica qualquer (idx=%d) salvo: v8_%s_replica_qualquer.csv\n", idx_repl, mes)
 end
 
 """
     gerar_csvs(mes::String, sims_4pol::Dict, ind_4pol::Dict)
 
-Gera 3 CSVs em OUTPUT_DIR:
+Gera 3 CSVs em CSVS_DIR:
 - v8_<mes>_resultados.csv (1 linha por (politica, replica))
 - v8_<mes>_sumario.csv     (1 linha por politica)
 - v8_<mes>_replica_repr.csv (30 dias × colunas por politica)
@@ -670,7 +577,7 @@ function gerar_csvs(mes::String, sims_4pol::Dict, ind_4pol::Dict)
             ))
         end
     end
-    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_resultados.csv"), df_res)
+    CSV.write(joinpath(CSVS_DIR, "v8_$(mes)_resultados.csv"), df_res)
 
     # 2) sumario (1 linha por politica)
     df_sum = DataFrame(
@@ -692,7 +599,7 @@ function gerar_csvs(mes::String, sims_4pol::Dict, ind_4pol::Dict)
             i.entram_dia, i.proc_dia, i.ocio_dia, i.spill_dia,
         ))
     end
-    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_sumario.csv"), df_sum)
+    CSV.write(joinpath(CSVS_DIR, "v8_$(mes)_sumario.csv"), df_sum)
 
     # 3) replica representativa (30 linhas × colunas por politica)
     df_rep = DataFrame(dia = collect(1:NUM_DIAS))
@@ -710,7 +617,7 @@ function gerar_csvs(mes::String, sims_4pol::Dict, ind_4pol::Dict)
         df_rep[!, Symbol("$(pol)_Ocioso")]   = [sim[t][:ocioso] for t in 1:NUM_DIAS]
         df_rep[!, Symbol("$(pol)_AdmOut")]   = [sim[t][:admitidos].out for t in 1:NUM_DIAS]
     end
-    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_replica_repr.csv"), df_rep)
+    CSV.write(joinpath(CSVS_DIR, "v8_$(mes)_replica_repr.csv"), df_rep)
 
     @printf("  CSVs salvos: v8_%s_{resultados,sumario,replica_repr}.csv\n", mes)
 end
@@ -737,7 +644,8 @@ function analisar_mes(mes::String)
     fit = fit_distribuicoes(data)
     @printf("[%s] dist escolhida: %s | AIC=%.2f | KS_p=%.4f\n",
         uppercase(mes), fit.escolhida.name, fit.escolhida.aic, fit.escolhida.ks_p)
-    plot_fit(mes, data, fit.ranking)
+    @printf("[%s] ranking AIC/KS_p: %s\n", uppercase(mes),
+        join(["$(r.name):AIC=$(round(r.aic,digits=1)),KS=$(round(r.ks_p,digits=3))" for r in fit.ranking], " | "))
 
     omega, probs = discretizar_por_bins(fit.escolhida.dist)
     @printf("[%s] discretizado em %d cenarios\n", uppercase(mes), length(omega))
@@ -786,16 +694,15 @@ function analisar_mes(mes::String)
         ind_4pol[pol] = calcular_indicadores(sims_4pol[pol], pol)
     end
 
-    gerar_tabelas_terminal(mes, sims_4pol, ind_4pol)
-    gerar_pngs(mes, ind_4pol)
-    gerar_csvs(mes, sims_4pol, ind_4pol)
-
     # SDDP no CENARIO MEDIO determinisitico (w_proc fixo = media SDDP por dia)
     # Mesmo cenario usado pelas politicas fixas — comparacao 100% justa.
-    # Esta sim e' usada como SDDP no dia-a-dia (consistente com Anexo).
+    # Esta sim e' usada nas tabelas do terminal e no grafico de custo acumulado.
     sim_sddp_cen_medio = gerar_csv_sddp_cenario_medio(mes, model, w_proc_medio_diario)
 
-    series = gerar_pngs_evolucao(mes, sims_4pol, sim_sddp_cen_medio)
+    gerar_tabelas_terminal(mes, sims_4pol, ind_4pol, sim_sddp_cen_medio)
+    gerar_csvs(mes, sims_4pol, ind_4pol)
+
+    series = construir_series(sims_4pol, sim_sddp_cen_medio)
     gerar_csv_dia_a_dia(mes, series)
     gerar_csv_replica_qualquer(mes, sims_sddp, 42)  # replica arbitraria r=42
 
@@ -841,7 +748,7 @@ function gerar_csv_sddp_cenario_medio(mes::String, model, w_proc_medio_diario::V
         adm_out  = [sim[t][:admitidos].out for t in 1:NUM_DIAS],
         custo    = [sim[t][:stage_objective] for t in 1:NUM_DIAS],
     )
-    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_sddp_cenario_medio.csv"), df)
+    CSV.write(joinpath(CSVS_DIR, "v8_$(mes)_sddp_cenario_medio.csv"), df)
     @printf("  CSV SDDP cenario medio salvo: v8_%s_sddp_cenario_medio.csv\n", mes)
     return sim
 end

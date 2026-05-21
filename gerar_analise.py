@@ -12,15 +12,16 @@ Estrutura ENXUTA (sem textos prolixos):
   8. Anexos: A/B (cenário médio), C/D (réplica qualquer)
 
 Flow:
-  julia model_v8.jl         (exporta CSVs em outputs/)
-  python plot_v8.py         (gera PNGs em outputs/)
+  julia model_v8.jl         (exporta CSVs em outputs/csvs/)
+  python plot_v8.py         (gera PNGs em outputs/graficos/)
   python gerar_analise.py   (gera ANALISE.md a partir dos CSVs + PNGs)
 """
 from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).parent
-OUT = ROOT / "outputs"
+OUT  = ROOT / "outputs"
+CSVS = OUT / "csvs"        # input: CSVs gerados pelo Julia
 POL_ORDER = ["SDDP", "P_-10", "P_-5", "P_0", "P_+5", "P_+10"]
 
 CAP_ECOPATIO = 1200
@@ -63,10 +64,10 @@ def carregar_dados():
     dados = {}
     for mes in ["mar", "jul"]:
         dados[mes] = {
-            "sumario":      pd.read_csv(OUT / f"v8_{mes}_sumario.csv"),
-            "dia_a_dia":    pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv"),
-            "sddp_cm":      pd.read_csv(OUT / f"v8_{mes}_sddp_cenario_medio.csv"),
-            "rep_qualquer": pd.read_csv(OUT / f"v8_{mes}_replica_qualquer.csv"),
+            "sumario":      pd.read_csv(CSVS / f"v8_{mes}_sumario.csv"),
+            "dia_a_dia":    pd.read_csv(CSVS / f"v8_{mes}_dia_a_dia.csv"),
+            "sddp_cm":      pd.read_csv(CSVS / f"v8_{mes}_sddp_cenario_medio.csv"),
+            "rep_qualquer": pd.read_csv(CSVS / f"v8_{mes}_replica_qualquer.csv"),
         }
     return dados
 
@@ -202,7 +203,7 @@ def gerar_md(dados, bases) -> str:
     md.append("")
     md.append("**Pipeline:**")
     md.append("```")
-    md.append('julia model_v8.jl        # exporta CSVs em outputs/')
+    md.append('julia model_v8.jl        # exporta CSVs em outputs/csvs/')
     md.append('python plot_v8.py        # gera 15 PNGs')
     md.append('python gerar_analise.py  # gera este ANALISE.md a partir dos CSVs')
     md.append("```")
@@ -345,7 +346,7 @@ def gerar_md(dados, bases) -> str:
     md.append("| mar | 2 480.2 | 251.3 | 0.10 | **LogNormal** | 417.5 | 0.55 |")
     md.append("| jul | 2 102.1 | 754.6 | 0.36 | **Weibull** | 484.8 | 0.93 |")
     md.append("")
-    md.append("Critério: menor AIC entre os modelos com KS p ≥ 0.05. Ajuste em `outputs/v8_<mes>_fit_*.png`.")
+    md.append("Critério: menor AIC entre os modelos com KS p ≥ 0.05. Ajuste em `ranking AIC/KS impresso no terminal`.")
     md.append("")
     md.append("**Bases X (média de adm_out SDDP nos dias 2..30):**")
     md.append("")
@@ -405,52 +406,52 @@ def gerar_md(dados, bases) -> str:
     # ----------------------------------------------------------
     md.append("## 6. Gráficos")
     md.append("")
-    md.append("Cada gráfico abaixo é gerado por `plot_v8.py` a partir dos CSVs. Todos em `outputs/`.")
+    md.append("Cada gráfico abaixo é gerado por `plot_v8.py` a partir de `outputs/csvs/`. PNGs em `outputs/graficos/`.")
     md.append("")
 
     md.append("### 6.1 Boxplot custo total (1 000 sims, log)")
     md.append("Mostra distribuição do custo total entre as 1 000 réplicas. Fixas viram linha (determinísticas no cenário médio).")
     md.append("")
-    md.append("![boxplot mar](outputs/py_v8_mar_boxplot.png)")
+    md.append("![boxplot mar](outputs/graficos/py_v8_mar_boxplot.png)")
     md.append("")
-    md.append("![boxplot jul](outputs/py_v8_jul_boxplot.png)")
+    md.append("![boxplot jul](outputs/graficos/py_v8_jul_boxplot.png)")
     md.append("")
 
     md.append("### 6.2 Service level por política")
     md.append("Fração da demanda admitida que é de fato processada nos dias 2..30 (cap 100%).")
     md.append("")
-    md.append("![service mar](outputs/py_v8_mar_service_level.png)")
+    md.append("![service mar](outputs/graficos/py_v8_mar_service_level.png)")
     md.append("")
-    md.append("![service jul](outputs/py_v8_jul_service_level.png)")
+    md.append("![service jul](outputs/graficos/py_v8_jul_service_level.png)")
     md.append("")
 
     md.append("### 6.3 Composição do custo")
     md.append("Decompõe o custo total em fila + spillover + ociosidade (escala log).")
     md.append("")
-    md.append("![composicao mar](outputs/py_v8_mar_composicao_custo.png)")
+    md.append("![composicao mar](outputs/graficos/py_v8_mar_composicao_custo.png)")
     md.append("")
-    md.append("![composicao jul](outputs/py_v8_jul_composicao_custo.png)")
+    md.append("![composicao jul](outputs/graficos/py_v8_jul_composicao_custo.png)")
     md.append("")
 
     md.append("### 6.4 Painel 4 variáveis (proc / fila / ocio log / spill log)")
     md.append("Evolução diária de 4 quantidades-chave por política.")
     md.append("")
-    md.append("![painel mar](outputs/py_v8_mar_painel.png)")
+    md.append("![painel mar](outputs/graficos/py_v8_mar_painel.png)")
     md.append("")
-    md.append("![painel jul](outputs/py_v8_jul_painel.png)")
+    md.append("![painel jul](outputs/graficos/py_v8_jul_painel.png)")
     md.append("")
 
     md.append("### 6.5 Custo acumulado (log)")
     md.append("Soma cumulativa do custo dia a dia — \"o gráfico do dinheiro\".")
     md.append("")
-    md.append("![custo acumulado mar](outputs/py_v8_mar_custo_acumulado.png)")
+    md.append("![custo acumulado mar](outputs/graficos/py_v8_mar_custo_acumulado.png)")
     md.append("")
-    md.append("![custo acumulado jul](outputs/py_v8_jul_custo_acumulado.png)")
+    md.append("![custo acumulado jul](outputs/graficos/py_v8_jul_custo_acumulado.png)")
     md.append("")
 
     md.append("### 6.6 Comparativo mar vs jul (side-by-side)")
     md.append("")
-    md.append("![comparativo](outputs/py_v8_mar_jul_comparativo.png)")
+    md.append("![comparativo](outputs/graficos/py_v8_mar_jul_comparativo.png)")
     md.append("")
     md.append("---")
     md.append("")
