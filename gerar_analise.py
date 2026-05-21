@@ -63,10 +63,10 @@ def carregar_dados():
     dados = {}
     for mes in ["mar", "jul"]:
         dados[mes] = {
-            "sumario":      pd.read_csv(OUT / f"v8_{mes}_sumario.csv"),
-            "dia_a_dia":    pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv"),
-            "replica_repr": pd.read_csv(OUT / f"v8_{mes}_replica_repr.csv"),
-            "rep_qualquer": pd.read_csv(OUT / f"v8_{mes}_replica_qualquer.csv"),
+            "sumario":       pd.read_csv(OUT / f"v8_{mes}_sumario.csv"),
+            "dia_a_dia":     pd.read_csv(OUT / f"v8_{mes}_dia_a_dia.csv"),
+            "sddp_cm":       pd.read_csv(OUT / f"v8_{mes}_sddp_cenario_medio.csv"),
+            "rep_qualquer":  pd.read_csv(OUT / f"v8_{mes}_replica_qualquer.csv"),
         }
     return dados
 
@@ -110,59 +110,42 @@ def gera_tabela_sumario(df_sum: pd.DataFrame, x_dict: dict) -> str:
 #   natural da restricao do modelo (nao por recalculo forcado).
 # ---------------------------------------------------------------------------
 def gera_tabela_dia_a_dia(dados_mes: dict, pol: str) -> str:
-    # Decide qual fonte de dados usar
-    if pol == "SDDP":
-        df = dados_mes["replica_repr"]
-        # Colunas no replica_repr: SDDP_FilaIni, SDDP_AdmIn, SDDP_Wproc, etc.
-        def get(col):
-            return df[f"{pol}_{col}"]
-        cols = {
-            "fila_in": "FilaIni", "adm_in": "AdmIn", "w_proc": "Wproc",
-            "proc": "Proc", "fila_out": "FilaFim", "spill": "Spill",
-            "ocioso": "Ocioso", "adm_out": "AdmOut",
-        }
-    else:
-        df = dados_mes["dia_a_dia"]
-        cols = {
-            "fila_in": "fila_in", "adm_in": "adm_in", "w_proc": "w_proc",
-            "proc": "proc", "fila_out": "fila_out", "spill": "spill",
-            "ocioso": "ocioso", "adm_out": "adm_out",
-        }
+    """
+    Tabela dia-a-dia para uma política, no MESMO cenário médio determinístico
+    (w_proc fixo = média das 1000 sims SDDP, estado inicial Fila=1200, Adm=3000).
 
+    - SDDP: lê de v8_<mes>_sddp_cenario_medio.csv (SDDP rodado com w_proc fixo
+      via SDDP.Historical). Trajetória nativa do modelo — Spill bate exato.
+    - P_-10..P_+10: lê de v8_<mes>_dia_a_dia.csv (simulação determinística
+      com adm_out = X constante, mesmo w_proc das 1000 sims SDDP). Nativas.
+    """
     lines = [
         "| Dia | FilaIni | AdmIn | w_proc | Proc | FilaFim | Spill | Ocioso | AdmOut | Custo |",
         "|----:|--------:|------:|-------:|-----:|--------:|------:|-------:|-------:|------:|",
     ]
-    custos = []
-    for t in range(NUM_DIAS):
-        row = df.iloc[t]
-        fi  = row[f"{pol}_{cols['fila_in']}"]
-        ai  = row[f"{pol}_{cols['adm_in']}"]
-        wp  = row[f"{pol}_{cols['w_proc']}"]
-        pr  = row[f"{pol}_{cols['proc']}"]
-        fo  = row[f"{pol}_{cols['fila_out']}"]
-        sp  = row[f"{pol}_{cols['spill']}"]
-        oc  = row[f"{pol}_{cols['ocioso']}"]
-        ao  = row[f"{pol}_{cols['adm_out']}"]
-        # Custo: para SDDP (replica_repr) calculamos do estagio; para fixas usamos custo do dia_a_dia
-        if pol == "SDDP":
-            cu = C_FILA * (fi + fo) / 2 + C_SPILLOVER * sp + C_OCIOSO_TOTAL * oc
-        else:
-            cu = row[f"{pol}_custo"]
-        custos.append(cu)
-        lines.append(
-            f"| {t+1} | {fmt_cell(fi)} | {fmt_cell(ai)} | {fmt_cell(wp)} | "
-            f"{fmt_cell(pr)} | {fmt_cell(fo)} | {fmt_cell(sp)} | {fmt_cell(oc)} | "
-            f"{fmt_cell(ao)} | {fmt_cell(cu)} |"
-        )
-
-    # Totais
     if pol == "SDDP":
-        tp = df[f"{pol}_{cols['proc']}"].sum()
-        ts = df[f"{pol}_{cols['spill']}"].sum()
-        to = df[f"{pol}_{cols['ocioso']}"].sum()
-        tc = sum(custos)
+        df = dados_mes["sddp_cm"]
+        for t in range(NUM_DIAS):
+            r = df.iloc[t]
+            lines.append(
+                f"| {t+1} | {fmt_cell(r['fila_in'])} | {fmt_cell(r['adm_in'])} | "
+                f"{fmt_cell(r['w_proc'])} | {fmt_cell(r['proc'])} | "
+                f"{fmt_cell(r['fila_out'])} | {fmt_cell(r['spill'])} | "
+                f"{fmt_cell(r['ocioso'])} | {fmt_cell(r['adm_out'])} | "
+                f"{fmt_cell(r['custo'])} |"
+            )
+        tp, ts, to, tc = df["proc"].sum(), df["spill"].sum(), df["ocioso"].sum(), df["custo"].sum()
     else:
+        df = dados_mes["dia_a_dia"]
+        for t in range(NUM_DIAS):
+            row = df.iloc[t]
+            lines.append(
+                f"| {t+1} | {fmt_cell(row[f'{pol}_fila_in'])} | {fmt_cell(row[f'{pol}_adm_in'])} | "
+                f"{fmt_cell(row[f'{pol}_w_proc'])} | {fmt_cell(row[f'{pol}_proc'])} | "
+                f"{fmt_cell(row[f'{pol}_fila_out'])} | {fmt_cell(row[f'{pol}_spill'])} | "
+                f"{fmt_cell(row[f'{pol}_ocioso'])} | {fmt_cell(row[f'{pol}_adm_out'])} | "
+                f"{fmt_cell(row[f'{pol}_custo'])} |"
+            )
         tp = df[f"{pol}_proc"].sum()
         ts = df[f"{pol}_spill"].sum()
         to = df[f"{pol}_ocioso"].sum()
@@ -305,14 +288,19 @@ def gerar_md(dados, bases) -> str:
     md.append(f"| Pior fixa | P_+10 = {fmt_brl(p10_custo_mar)} ({razao_p10_mar:.0f}×) | P_+10 = {fmt_brl(p10_custo_jul)} ({razao_p10_jul:.0f}×) |")
     md.append("")
 
-    # ---- §1.1 NOTA SOBRE SDDP NAS TABELAS ----
-    md.append("### 1.1 Como o SDDP aparece nas tabelas (valores nativos)")
+    # ---- §1.1 CENÁRIO MÉDIO DETERMINÍSTICO ----
+    md.append("### 1.1 Comparação no cenário médio determinístico")
     md.append("")
-    md.append(f"Pela definição matemática do modelo v7: `spillover[t] = max(0, fila.out[t] − {CAP_ECOPATIO})`. Essa restrição vale **em cada réplica individual** (1000 trajetórias do SDDP).")
+    md.append("**Todas as 6 políticas (SDDP + 5 fixas) são comparadas no MESMO cenário:**")
     md.append("")
-    md.append("**Decisão de apresentação:** nas tabelas dos Anexos A e B, o SDDP é representado pela **réplica representativa** (a trajetória das 1000 sims com custo total mais próximo da média). É uma execução real do SDDP — sem agregação estocástica, sem recálculo forçado. `Spill = max(0, FilaFim − 1 200)` bate linha a linha **como propriedade nativa do modelo**, não como simplificação.")
+    md.append(f"- `w_proc[t]` fixo = média das 1000 sims SDDP por dia `t` (mesma série em todas as políticas)")
+    md.append(f"- Estado inicial: `Fila = {FILA_INICIAL}`, `AdmIn = {ADMITIDOS_INICIAL}` (idêntico)")
+    md.append(f"- SDDP roda esse cenário via `SDDP.Historical` (política treinada, w_proc forçado)")
+    md.append(f"- Fixas rodam Monte Carlo determinístico com `adm_out = X` constante")
     md.append("")
-    md.append("Para as **estatísticas agregadas** (custo médio das 1000 sims, IC 95%, quantis, etc.), ver §5. Esses valores são calculados sobre todas as 1000 réplicas.")
+    md.append(f"**Em cada trajetória individual** (incluindo SDDP no cenário médio), `Spill = max(0, FilaFim − {CAP_ECOPATIO})` bate exato linha a linha — é a restrição nativa do modelo, não recálculo forçado.")
+    md.append("")
+    md.append("**Para as estatísticas agregadas** das 1000 sims estocásticas do SDDP (custo médio, IC 95%, quantis, P(spill>0)), ver Tabelas 5.1, 5.2 e seção 5.4 (Indicadores).")
     md.append("")
 
     # ---- §1.2 ACHADO CONTRAINTUITIVO ----
@@ -425,6 +413,53 @@ def gerar_md(dados, bases) -> str:
     md.append("")
     md.append("![composicao jul](outputs/py_v8_jul_composicao_custo.png)")
     md.append("")
+
+    # ---- §5.4 INDICADORES ----
+    md.append("### 5.4 Indicadores em detalhe")
+    md.append("")
+    md.append("Cada indicador abaixo é calculado sobre as **1000 simulações estocásticas do SDDP** (e da política fixa correspondente, com 1000 réplicas determinísticas idênticas porque a fixa não tem aleatoriedade no w_proc).")
+    md.append("")
+    md.append("**Glossário:**")
+    md.append("")
+    md.append("| Indicador | O que mede |")
+    md.append("|-----------|------------|")
+    md.append("| **Custo médio** | Esperança do custo total dos 30 dias (R$). |")
+    md.append("| **IC 95%** | Intervalo de confiança 95% do custo médio (apenas SDDP tem >0). |")
+    md.append("| **P5 / P50 / P95** | Quantis 5%, 50% (mediana), 95% da distribuição do custo total. |")
+    md.append("| **P(spill > 0)** | Probabilidade de haver spillover em algum dia da simulação. |")
+    md.append("| **Spill cond. médio** | Spillover total esperado **condicionado** a ter ocorrido. |")
+    md.append(f"| **Fila pico médio** | Média do pico de fila ao longo dos 30 dias (limite operacional MAX_VAGAS={MAX_VAGAS}). |")
+    md.append("| **Service level** | `Σ proc / Σ admitidos.in` nos dias 2..30, cap em 100%. % da demanda atendida. |")
+    md.append("| **entram_dia** | Caminhões médios admitidos por dia. |")
+    md.append("| **proc_dia** | Caminhões médios processados por dia. |")
+    md.append("| **ocio_dia** | Capacidade ociosa média por dia. |")
+    md.append("| **spill_dia** | Spillover médio por dia. |")
+    md.append("")
+
+    for (mes, df_s, titulo) in [("mar", sddp_mar, "MAR"), ("jul", sddp_jul, "JUL")]:
+        md.append(f"**{titulo} — todos os indicadores:**")
+        md.append("")
+        md.append("| Indicador | SDDP | P_-10 | P_-5 | P_0 | P_+5 | P_+10 |")
+        md.append("|-----------|-----:|------:|-----:|----:|-----:|------:|")
+        # Custo médio
+        row = lambda key, fn: f"| {key} | " + " | ".join(
+            fn(df_s[df_s["politica"] == pol].iloc[0]) for pol in POL_ORDER
+        ) + " |"
+        md.append(row("Custo médio",        lambda r: fmt_brl(r["custo_medio"])))
+        md.append(row("IC 95%",             lambda r: f"± {r['custo_ic']/1e6:.2f} M"))
+        md.append(row("P5 (custo)",         lambda r: fmt_brl(r["custo_p5"])))
+        md.append(row("P50 (custo)",        lambda r: fmt_brl(r["custo_p50"])))
+        md.append(row("P95 (custo)",        lambda r: fmt_brl(r["custo_p95"])))
+        md.append(row("P(spill > 0)",       lambda r: f"{r['spill_prob']*100:.1f}%"))
+        md.append(row("Spill cond. médio",  lambda r: f"{r['spill_cond_med']:,.0f}".replace(",", " ")))
+        md.append(row("Fila pico médio",    lambda r: f"{r['fila_pico_med']:,.0f}".replace(",", " ")))
+        md.append(row("Service level",      lambda r: f"{r['service_level']*100:.1f}%"))
+        md.append(row("entram/dia",         lambda r: f"{r['entram_dia']:,.0f}".replace(",", " ")))
+        md.append(row("proc/dia",           lambda r: f"{r['proc_dia']:,.0f}".replace(",", " ")))
+        md.append(row("ocio/dia",           lambda r: f"{r['ocio_dia']:,.0f}".replace(",", " ")))
+        md.append(row("spill/dia",          lambda r: f"{r['spill_dia']:,.0f}".replace(",", " ")))
+        md.append("")
+
     md.append("---")
     md.append("")
 
@@ -490,19 +525,25 @@ def gerar_md(dados, bases) -> str:
         md.append(f"## Anexo {ax_letra} — {titulo}")
         md.append("")
         if ax_letra == "A":
-            md.append("> **Como ler — VALORES NATIVOS DO MODELO, sem recálculo forçado:**")
+            md.append("> **TODAS as políticas rodam no MESMO cenário médio determinístico:**")
             md.append(">")
-            md.append("> - **SDDP**: tabela usa a **réplica representativa** (a trajetória das 1000 sims com custo total mais próximo da média). É uma simulação real do SDDP — `Spill = max(0, FilaFim − 1 200)` bate linha a linha **porque é a própria restrição do modelo**, não por recálculo. O Σ Custo desta tabela é o custo daquela trajetória específica (próximo do custo médio reportado em §5, mas não idêntico).")
-            md.append("> - **Fixas (P_-10..P_+10)**: trajetórias determinísticas (w_proc fixo = média SDDP por dia, adm_out = X constante). Valores nativos, fórmula bate exato.")
+            md.append("> - `w_proc[t]` fixo = média das 1000 sims SDDP por dia (mesma série em todas)")
+            md.append("> - Estado inicial idêntico (`Fila=1 200`, `AdmIn=3 000`)")
             md.append(">")
-            md.append("> Para estatísticas agregadas das 1000 simulações estocásticas, ver §5 (sumário).")
+            md.append("> **SDDP**: trajetória produzida pelo `SDDP.simulate` com `sampling_scheme=SDDP.Historical(w_proc_medio_diario)` — a política treinada respondendo ao cenário médio. Trajetória nativa, sem recálculo.")
+            md.append(">")
+            md.append("> **Fixas (P_-10..P_+10)**: Monte Carlo determinístico com `adm_out = X` constante e `w_proc[t]` = mesma série média.")
+            md.append(">")
+            md.append("> **Spill = max(0, FilaFim − 1 200) bate linha a linha em TODAS as 6 tabelas** — propriedade nativa da restrição do modelo.")
+            md.append(">")
+            md.append("> Para estatísticas agregadas das 1000 sims estocásticas (custo médio com IC, quantis, P(spill>0)), ver §5.4 (Indicadores).")
             md.append("")
         else:
-            md.append("Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). **SDDP é uma trajetória individual (réplica representativa) — valores nativos do modelo.**")
+            md.append("Idem ao Anexo A, mas para JULHO (alta variabilidade, CV=36%). Mesmo cenário médio determinístico, mesma série w_proc para todas as 6 políticas.")
             md.append("")
 
         for pol in POL_ORDER:
-            tag = "(média 1000 sims SDDP — recalculado coerente)" if pol == "SDDP" else "(cenário médio: w_proc = média SDDP, adm_out = X constante)"
+            tag = "(SDDP no cenário médio determinístico — w_proc fixo via SDDP.Historical)" if pol == "SDDP" else "(cenário médio: w_proc = média SDDP por dia, adm_out = X constante)"
             md.append(f"#### {mes.upper()} — Política `{pol}` {tag}")
             md.append("")
             md.append(gera_tabela_dia_a_dia(dados[mes], pol))

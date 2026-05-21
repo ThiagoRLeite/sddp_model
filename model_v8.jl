@@ -741,7 +741,54 @@ function analisar_mes(mes::String)
     gerar_csv_dia_a_dia(mes, series)
     gerar_csv_replica_qualquer(mes, sims_sddp, 42)  # replica arbitraria r=42
 
+    # Simula SDDP no CENARIO MEDIO determinisitico (w_proc fixo = media SDDP por dia)
+    # Mesmo cenario usado pelas politicas fixas — comparacao 100% justa.
+    gerar_csv_sddp_cenario_medio(mes, model, w_proc_medio_diario)
+
     return ind_4pol
+end
+
+"""
+    gerar_csv_sddp_cenario_medio(mes, model, w_proc_medio_diario) -> nothing
+
+Simula UMA trajetoria do SDDP no CENARIO MEDIO DETERMINISTICO:
+  w_proc[t] = mean(w_proc(SDDP), dias 1..30 das 1000 sims)
+
+Usa SDDP.Historical sampling scheme para forcar w_proc na sequencia exata.
+Resultado: trajetoria do SDDP onde Spill = max(0, FilaFim-1200) bate exato
+(valores nativos do modelo, sem agregacao estocastica). MESMO cenario que
+as politicas fixas usam — comparacao 100% justa.
+
+Saida: v8_<mes>_sddp_cenario_medio.csv
+"""
+function gerar_csv_sddp_cenario_medio(mes::String, model, w_proc_medio_diario::Vector{Float64})
+    # Cria scheme historico: forca w_proc fixo por estagio
+    # Sintaxe SDDP.jl: cada tupla = (node_index, noise_value)
+    historical = SDDP.Historical([
+        (t, w_proc_medio_diario[t]) for t in 1:NUM_DIAS
+    ])
+
+    sims = SDDP.simulate(
+        model, 1,
+        [:fila, :admitidos, :processados, :spillover, :ocioso, :w_proc];
+        sampling_scheme = historical,
+    )
+    sim = sims[1]
+
+    df = DataFrame(
+        dia      = collect(1:NUM_DIAS),
+        fila_in  = [sim[t][:fila].in       for t in 1:NUM_DIAS],
+        adm_in   = [sim[t][:admitidos].in  for t in 1:NUM_DIAS],
+        w_proc   = [sim[t][:w_proc]        for t in 1:NUM_DIAS],
+        proc     = [sim[t][:processados]   for t in 1:NUM_DIAS],
+        fila_out = [sim[t][:fila].out      for t in 1:NUM_DIAS],
+        spill    = [sim[t][:spillover]     for t in 1:NUM_DIAS],
+        ocioso   = [sim[t][:ocioso]        for t in 1:NUM_DIAS],
+        adm_out  = [sim[t][:admitidos].out for t in 1:NUM_DIAS],
+        custo    = [sim[t][:stage_objective] for t in 1:NUM_DIAS],
+    )
+    CSV.write(joinpath(OUTPUT_DIR, "v8_$(mes)_sddp_cenario_medio.csv"), df)
+    @printf("  CSV SDDP cenario medio salvo: v8_%s_sddp_cenario_medio.csv\n", mes)
 end
 
 function main()
