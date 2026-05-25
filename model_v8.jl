@@ -253,6 +253,98 @@ function simular_fixa(X::Float64, w_proc_medio_diario::Vector{Float64}, N::Int)
 end
 
 """
+    simular_fixa_estocastica(X::Float64, w_proc_sddp_mat::Matrix{Float64})
+        -> Vector{Vector{Dict}}
+
+Simula a politica fixa "admitir X constante" no MESMO conjunto estocastico
+de cenarios w_proc que o SDDP foi avaliado (CRN — common random numbers).
+Comparacao 100% justa: SDDP e fixas avaliados nas MESMAS 1000 amostras.
+
+`w_proc_sddp_mat[r, t]` = w_proc amostrado pelo SDDP na replica r, dia t.
+Retorna a mesma estrutura de sims_sddp (lista de N replicas × NUM_DIAS estagios).
+"""
+function simular_fixa_estocastica(X::Float64, w_proc_sddp_mat::Matrix{Float64})
+    N, T = size(w_proc_sddp_mat)
+    @assert T == NUM_DIAS
+
+    sims = Vector{Vector{Dict{Symbol,Any}}}(undef, N)
+    for r in 1:N
+        fila_in_t = Float64(FILA_INICIAL)
+        adm_in_t  = Float64(ADMITIDOS_INICIAL)
+        sim_r = Vector{Dict{Symbol,Any}}(undef, NUM_DIAS)
+        for t in 1:NUM_DIAS
+            w_t = w_proc_sddp_mat[r, t]   # mesmo w_proc que o SDDP viu na replica r
+
+            proc_t  = min(w_t, fila_in_t + adm_in_t)
+            spill_t = max(0.0, fila_in_t + adm_in_t - CAP_ECOPATIO - proc_t)
+            ocio_t  = max(0.0, w_t - proc_t)
+            fila_out_t = fila_in_t + adm_in_t - proc_t
+            adm_out_t  = X
+
+            custo_t = C_FILA * (fila_in_t + fila_out_t) / 2 +
+                      C_SPILLOVER * spill_t +
+                      C_OCIOSO_TOTAL * ocio_t
+
+            sim_r[t] = Dict{Symbol,Any}(
+                :fila        => (in = fila_in_t, out = fila_out_t),
+                :admitidos   => (in = adm_in_t,  out = adm_out_t),
+                :processados => proc_t,
+                :spillover   => spill_t,
+                :ocioso      => ocio_t,
+                :w_proc      => w_t,
+                :stage_objective => custo_t,
+            )
+
+            fila_in_t = fila_out_t
+            adm_in_t  = adm_out_t
+        end
+        sims[r] = sim_r
+    end
+    return sims
+end
+
+"""
+    trajetoria_media_das_sims(sims) -> Vector{Dict{Symbol,Any}}
+
+Constroi a "trajetoria media" das N replicas: dia a dia, cada quantidade
+e' a media aritmetica entre as N realizacoes estocasticas.
+
+Estrutura compativel com uma simulacao normal (Vector{Dict} de NUM_DIAS estagios)
+para reuso direto em `_imprime_tabela_anexo` e nas series do CSV dia-a-dia.
+
+NOTA (Jensen): a media linha-a-linha NAO satisfaz as fórmulas operacionais.
+Por exemplo: mean(max(0, FilaFim − 1200)) ≠ max(0, mean(FilaFim) − 1200).
+Mas a Σ Custo do anexo bate EXATO com o `custo_medio` de §5 (linearidade
+de média + soma).
+"""
+function trajetoria_media_das_sims(sims)
+    N = length(sims)
+    @assert N > 0
+    media = Vector{Dict{Symbol,Any}}(undef, NUM_DIAS)
+    for t in 1:NUM_DIAS
+        fila_in  = mean(sim[t][:fila].in       for sim in sims)
+        fila_out = mean(sim[t][:fila].out      for sim in sims)
+        adm_in   = mean(sim[t][:admitidos].in  for sim in sims)
+        adm_out  = mean(sim[t][:admitidos].out for sim in sims)
+        proc     = mean(sim[t][:processados]   for sim in sims)
+        spill    = mean(sim[t][:spillover]     for sim in sims)
+        ocioso   = mean(sim[t][:ocioso]        for sim in sims)
+        w_proc   = mean(sim[t][:w_proc]        for sim in sims)
+        custo    = mean(sim[t][:stage_objective] for sim in sims)
+        media[t] = Dict{Symbol,Any}(
+            :fila        => (in = fila_in, out = fila_out),
+            :admitidos   => (in = adm_in,  out = adm_out),
+            :processados => proc,
+            :spillover   => spill,
+            :ocioso      => ocioso,
+            :w_proc      => w_proc,
+            :stage_objective => custo,
+        )
+    end
+    return media
+end
+
+"""
     calcular_indicadores(sims, label::String) -> NamedTuple
 
 Calcula os 7 indicadores I1-I7 do SPEC. Funciona para sims_sddp e sims_fixa
@@ -318,7 +410,7 @@ Imprime no terminal:
   TABELA B — ANEXO cenario medio deterministico (mesmas tabelas dos Anexos A/B do ANALISE.md)
   TABELA C — Replica representativa estocastica (SDDP 1000 sims)
 """
-function gerar_tabelas_terminal(mes::String, sims_4pol::Dict, ind_4pol::Dict, sim_sddp_cen_medio)
+function gerar_tabelas_terminal(mes::String, sims_4pol::Dict, ind_4pol::Dict, sim_media::Dict)
     sep_thick = "=" ^ 120
     sep_thin  = "-" ^ 120
 
@@ -336,9 +428,9 @@ function gerar_tabelas_terminal(mes::String, sims_4pol::Dict, ind_4pol::Dict, si
             100*i.spill_prob, i.spill_cond_med, i.fila_pico_med, 100*i.service_level)
     end
 
-    # ============ TABELA B — ANEXO cenario medio ============
-    # Helper: imprime 30 dias + linha Σ. Para SDDP, usa sim_sddp_cen_medio (SDDP.Historical).
-    # Para as fixas, usa sims_4pol[pol][1] (primeira replica — todas identicas, deterministicas).
+    # ============ TABELA B — ANEXO trajetoria media estocastica ============
+    # Helper: imprime 30 dias + linha Σ. Cada celula = media das 1000 realizacoes daquele dia.
+    # Σ Custo bate EXATO com `custo_medio` de §5. Formulas nao batem linha-a-linha (Jensen).
     function _imprime_tabela_anexo(pol, sim)
         println("\n  [$pol]  Σ Custo = R\$ $(round(sum(sim[t][:stage_objective] for t in 1:NUM_DIAS) / 1e6, digits=2))M")
         @printf("  %3s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %10s\n",
@@ -362,13 +454,13 @@ function gerar_tabelas_terminal(mes::String, sims_4pol::Dict, ind_4pol::Dict, si
     end
 
     println("\n", sep_thick)
-    println("  TABELA B — ANEXO cenario medio deterministico ($(uppercase(mes)), 1 trajetoria, 30 dias)")
-    println("           SDDP via SDDP.Historical, fixas com adm_out fixo. Comparacao 100% justa.")
-    println("           Σ Custo bate EXATO com o grafico de custo acumulado dia 30.")
+    println("  TABELA B — ANEXO trajetoria media estocastica ($(uppercase(mes)), media das $N_SIM sims, 30 dias)")
+    println("           Cada celula = media diaria entre as $N_SIM realizacoes.")
+    println("           Σ Custo bate EXATO com o `custo_medio` da TABELA A e o §5.")
+    println("           Formulas (Spill=max(0,FilaFim-1200) etc) NAO batem linha-a-linha (Jensen).")
     println(sep_thick)
-    _imprime_tabela_anexo("SDDP", sim_sddp_cen_medio)
-    for pol in ["P_-10", "P_-5", "P_0", "P_+5", "P_+10"]
-        _imprime_tabela_anexo(pol, sims_4pol[pol][1])  # 1a replica = todas identicas (det.)
+    for pol in POL_ORDER
+        _imprime_tabela_anexo(pol, sim_media[pol])
     end
 
     # ============ TABELA C — replica representativa estocastica ============
@@ -400,16 +492,16 @@ end
 # publicacao-ready (matplotlib+seaborn) em outputs/graficos/.
 
 """
-    construir_series(sims_4pol::Dict, sim_sddp_cen_medio) -> Dict
+    construir_series(sims_4pol::Dict, sim_media::Dict) -> Dict
 
 Constroi o dicionario series usado no CSV dia-a-dia.
 
-CONSISTENCIA com Anexos: SDDP usa a TRAJETORIA do cenario medio deterministico
-(via SDDP.Historical) — bate exato com os Anexos A/B do ANALISE.md.
-Fixas seguem deterministicas (1000 sims identicas, primeira replica = todas).
+CONSISTENCIA com Anexos: todas as politicas usam a TRAJETORIA MEDIA das 1000
+sims estocasticas — bate exato com os Anexos A/B e com o grafico de custo
+acumulado. Σ Custo dia 30 = `custo_medio` de §5.
 Banda estocastica do SDDP (P5/P95 + media 1000 sims) eh exportada como SDDP_estoc_*.
 """
-function construir_series(sims_4pol::Dict, sim_sddp_cen_medio)
+function construir_series(sims_4pol::Dict, sim_media::Dict)
     dias = collect(1:NUM_DIAS)
 
     function _medias_dia(sims, key, in_or_out=nothing)
@@ -428,37 +520,25 @@ function construir_series(sims_4pol::Dict, sim_sddp_cen_medio)
         ]
     end
 
-    # series[pol][var] = vetor de 30 valores
+    function _series_de_trajetoria(sim)
+        return Dict(
+            :fila_in  => [sim[t][:fila].in       for t in dias],
+            :adm_in   => [sim[t][:admitidos].in  for t in dias],
+            :w_proc   => [sim[t][:w_proc]        for t in dias],
+            :proc     => [sim[t][:processados]   for t in dias],
+            :ocioso   => [sim[t][:ocioso]        for t in dias],
+            :spill    => [sim[t][:spillover]     for t in dias],
+            :fila_out => [sim[t][:fila].out      for t in dias],
+            :adm_out  => [sim[t][:admitidos].out for t in dias],
+            :custo    => [sim[t][:stage_objective] for t in dias],
+        )
+    end
+
+    # series[pol][var] = vetor de 30 valores. Todas as politicas usam a TRAJETORIA
+    # MEDIA das 1000 sims estocasticas (consistente com Anexos A/B).
     series = Dict{String,Any}()
     for pol in POL_ORDER
-        sims = sims_4pol[pol]
-        if pol == "SDDP"
-            # SDDP usa a trajetoria do cenario medio deterministico (consistente com Anexo)
-            series[pol] = Dict(
-                :fila_in  => [sim_sddp_cen_medio[t][:fila].in       for t in dias],
-                :adm_in   => [sim_sddp_cen_medio[t][:admitidos].in  for t in dias],
-                :w_proc   => [sim_sddp_cen_medio[t][:w_proc]        for t in dias],
-                :proc     => [sim_sddp_cen_medio[t][:processados]   for t in dias],
-                :ocioso   => [sim_sddp_cen_medio[t][:ocioso]        for t in dias],
-                :spill    => [sim_sddp_cen_medio[t][:spillover]     for t in dias],
-                :fila_out => [sim_sddp_cen_medio[t][:fila].out      for t in dias],
-                :adm_out  => [sim_sddp_cen_medio[t][:admitidos].out for t in dias],
-                :custo    => [sim_sddp_cen_medio[t][:stage_objective] for t in dias],
-            )
-        else
-            # Fixas: media das 1000 sims (identicas, pois deterministicas)
-            series[pol] = Dict(
-                :fila_in  => _medias_dia(sims, :fila, :in),
-                :adm_in   => _medias_dia(sims, :admitidos, :in),
-                :w_proc   => _medias_dia(sims, :w_proc),
-                :proc     => _medias_dia(sims, :processados),
-                :ocioso   => _medias_dia(sims, :ocioso),
-                :spill    => _medias_dia(sims, :spillover),
-                :fila_out => _medias_dia(sims, :fila, :out),
-                :adm_out  => _medias_dia(sims, :admitidos, :out),
-                :custo    => _medias_dia(sims, :stage_objective),
-            )
-        end
+        series[pol] = _series_de_trajetoria(sim_media[pol])
         series[pol][:custo_acum] = cumsum(series[pol][:custo])
     end
 
@@ -681,28 +761,42 @@ function analisar_mes(mes::String)
         @printf("  %-6s X=%.1f (base * %+.0f%%)\n", n, x, 100*(x/base - 1))
     end
 
-    # 3) Simula as 5 politicas fixas (deterministico, w_proc = media SDDP por dia)
-    println("\n[$(uppercase(mes))] simulando 5 politicas fixas (deterministico, w_proc=media SDDP)...")
-    sims_4pol = Dict{String,Any}("SDDP" => sims_sddp)
-    for (nome, x) in zip(pol_fixas_nomes, Xs)
-        sims_4pol[nome] = simular_fixa(x, w_proc_medio_diario, N_SIM)
+    # 3) Matriz w_proc das 1000 sims SDDP (CRN — usada para avaliar as fixas)
+    w_proc_sddp_mat = Matrix{Float64}(undef, N_SIM, NUM_DIAS)
+    for r in 1:N_SIM, t in 1:NUM_DIAS
+        w_proc_sddp_mat[r, t] = sims_sddp[r][t][:w_proc]
     end
 
-    # 4) Indicadores das 6 politicas (SDDP ja calculado acima — reaproveita)
+    # 4) Avalia as 5 politicas fixas ESTOCASTICAMENTE no mesmo conjunto w_proc do SDDP
+    #    (CRN — common random numbers: comparacao 100% justa, variancia reduzida)
+    println("\n[$(uppercase(mes))] avaliando 5 politicas fixas estocasticamente (CRN com SDDP, N=$N_SIM)...")
+    sims_4pol = Dict{String,Any}("SDDP" => sims_sddp)
+    for (nome, x) in zip(pol_fixas_nomes, Xs)
+        sims_4pol[nome] = simular_fixa_estocastica(x, w_proc_sddp_mat)
+    end
+
+    # 5) Indicadores das 6 politicas (SDDP ja calculado acima — reaproveita)
     ind_4pol = Dict{String,Any}("SDDP" => ind_sddp)
     for pol in pol_fixas_nomes
         ind_4pol[pol] = calcular_indicadores(sims_4pol[pol], pol)
     end
 
-    # SDDP no CENARIO MEDIO determinisitico (w_proc fixo = media SDDP por dia)
-    # Mesmo cenario usado pelas politicas fixas — comparacao 100% justa.
-    # Esta sim e' usada nas tabelas do terminal e no grafico de custo acumulado.
-    sim_sddp_cen_medio = gerar_csv_sddp_cenario_medio(mes, model, w_proc_medio_diario)
+    # 6) Trajetoria MEDIA das 1000 sims estocasticas por politica (Anexos A/B + grafico).
+    #    Cada quantidade dia t = media aritmetica das 1000 realizacoes naquele dia.
+    #    Σ Custo bate EXATO com `custo_medio` do §5 (linearidade media+soma).
+    #    As formulas operacionais NAO batem linha-a-linha (Jensen) — esperado.
+    sim_media = Dict{String,Any}()
+    for pol in POL_ORDER
+        sim_media[pol] = trajetoria_media_das_sims(sims_4pol[pol])
+    end
 
-    gerar_tabelas_terminal(mes, sims_4pol, ind_4pol, sim_sddp_cen_medio)
+    # CSV SDDP cenario medio deterministico — mantido para inspecao (nao mais usado em §3)
+    gerar_csv_sddp_cenario_medio(mes, model, w_proc_medio_diario)
+
+    gerar_tabelas_terminal(mes, sims_4pol, ind_4pol, sim_media)
     gerar_csvs(mes, sims_4pol, ind_4pol)
 
-    series = construir_series(sims_4pol, sim_sddp_cen_medio)
+    series = construir_series(sims_4pol, sim_media)
     gerar_csv_dia_a_dia(mes, series)
     gerar_csv_replica_qualquer(mes, sims_sddp, 42)  # replica arbitraria r=42
 
